@@ -1,0 +1,578 @@
+DATABASE SCHEMA - 2025-12-30 20:12:03
+=================================================================
+
+Table: appointments
+-----------------------------------------------------------------
+  id                             bigint               NOT NULL   DEFAULT nextval('appointments_id_seq'::regclass)
+  client_id                      bigint               NULL       
+  client_name                    character varying(255) NOT NULL   
+  client_email                   character varying(255) NULL       
+  client_phone                   character varying(255) NULL       
+  salon_id                       bigint               NOT NULL   
+  staff_id                       bigint               NOT NULL   
+  service_id                     bigint               NULL       
+  date                           date                 NOT NULL   
+  time                           character varying(255) NOT NULL   
+  end_time                       character varying(255) NOT NULL   
+  status                         character varying(255) NOT NULL   DEFAULT 'pending'::character varying
+  notes                          text                 NULL       
+  total_price                    numeric              NOT NULL   DEFAULT '0'::numeric
+  payment_status                 character varying(255) NOT NULL   DEFAULT 'pending'::character varying
+  created_at                     timestamp without time zone NULL       
+  updated_at                     timestamp without time zone NULL       
+  deleted_at                     timestamp without time zone NULL       
+  booking_source                 character varying(50) NOT NULL   DEFAULT 'web'::character varying
+  guest_address                  character varying(255) NULL       
+  is_guest                       boolean              NOT NULL   DEFAULT false
+  source                         character varying(255) NOT NULL   DEFAULT 'admin'::character varying
+  import_batch_id                bigint               NULL       
+  service_ids                    json                 NULL       
+
+Table: blocked_ips
+-----------------------------------------------------------------
+  id                             bigint               NOT NULL   DEFAULT nextval('blocked_ips_id_seq'::regclass)
+  ip                             character varying(45) NOT NULL   
+  reason                         character varying(255) NULL       
+  country_code                   character varying(2) NULL       
+  user_agent                     character varying(255) NULL       
+  blocked_at                     timestamp without time zone NOT NULL   
+  expires_at                     timestamp without time zone NULL       
+  block_count                    integer              NOT NULL   DEFAULT 1
+  created_at                     timestamp without time zone NULL       
+  updated_at                     timestamp without time zone NULL       
+
+Table: bot_requests
+-----------------------------------------------------------------
+  id                             bigint               NOT NULL   DEFAULT nextval('bot_requests_id_seq'::regclass)
+  ip                             character varying(45) NOT NULL   
+  user_agent                     character varying(255) NULL       
+  path                           character varying(255) NULL       
+  method                         character varying(10) NULL       
+  country_code                   character varying(2) NULL       
+  is_bot                         boolean              NOT NULL   DEFAULT false
+  is_blocked                     boolean              NOT NULL   DEFAULT false
+  created_at                     timestamp without time zone NOT NULL   
+
+Table: cache
+-----------------------------------------------------------------
+  key                            character varying(255) NOT NULL   
+  value                          text                 NOT NULL   
+  expiration                     integer              NOT NULL   
+
+Table: cache_locks
+-----------------------------------------------------------------
+  key                            character varying(255) NOT NULL   
+  owner                          character varying(255) NOT NULL   
+  expiration                     integer              NOT NULL   
+
+Table: chatbot_analytics
+-----------------------------------------------------------------
+  id                             bigint               NOT NULL   DEFAULT nextval('chatbot_analytics_id_seq'::regclass)
+  salon_id                       bigint               NOT NULL   
+  date                           date                 NOT NULL   
+  total_conversations            integer              NOT NULL   
+  new_conversations              integer              NOT NULL   
+  completed_conversations        integer              NOT NULL   
+  abandoned_conversations        integer              NOT NULL   
+  total_messages_received        integer              NOT NULL   
+  total_messages_sent            integer              NOT NULL   
+  avg_messages_per_conversation  numeric              NULL       
+  avg_response_time_seconds      numeric              NULL       
+  avg_conversation_duration_minutes numeric              NULL       
+  booking_attempts               integer              NOT NULL   
+  successful_bookings            integer              NOT NULL   
+  booking_conversion_rate        numeric              NULL       
+  avg_ai_confidence              numeric              NULL       
+  low_confidence_count           integer              NOT NULL   
+  human_takeover_count           integer              NOT NULL   
+  created_at                     timestamp without time zone NULL       
+  updated_at                     timestamp without time zone NULL       
+
+Table: chatbot_conversations
+-----------------------------------------------------------------
+  id                             bigint               NOT NULL   DEFAULT nextval('chatbot_conversations_id_seq'::regclass)
+  salon_id                       bigint               NOT NULL   
+  social_integration_id          bigint               NOT NULL   
+  appointment_id                 bigint               NULL       
+  platform                       character varying(20) NOT NULL   
+  thread_id                      character varying(255) NOT NULL   
+  sender_psid                    character varying(255) NOT NULL   
+  sender_name                    character varying(255) NULL       
+  sender_profile_pic             text                 NULL       
+  state                          character varying(50) NOT NULL   DEFAULT 'new'::character varying
+  intent                         character varying(50) NULL       
+  confidence                     numeric              NULL       
+  context                        json                 NOT NULL   DEFAULT '{}'::json
+  message_count                  integer              NOT NULL   
+  last_message_at                timestamp without time zone NULL       
+  last_bot_response_at           timestamp without time zone NULL       
+  requires_human                 boolean              NOT NULL   DEFAULT false
+  human_takeover_at              timestamp without time zone NULL       
+  human_takeover_by_user_id      bigint               NULL       
+  started_at                     timestamp without time zone NOT NULL   DEFAULT CURRENT_TIMESTAMP
+  completed_at                   timestamp without time zone NULL       
+  abandoned_at                   timestamp without time zone NULL       
+  created_at                     timestamp without time zone NULL       
+  updated_at                     timestamp without time zone NULL       
+
+Table: chatbot_messages
+-----------------------------------------------------------------
+  id                             bigint               NOT NULL   DEFAULT nextval('chatbot_messages_id_seq'::regclass)
+  conversation_id                bigint               NOT NULL   
+  direction                      character varying(10) NOT NULL   
+  message_type                   character varying(20) NOT NULL   DEFAULT 'text'::character varying
+  message_text                   text                 NULL       
+  message_payload                json                 NULL       
+  meta_message_id                character varying(255) NULL       
+  ai_processed                   boolean              NOT NULL   DEFAULT false
+  ai_intent                      character varying(50) NULL       
+  ai_entities                    json                 NULL       
+  ai_confidence                  numeric              NULL       
+  ai_processing_time_ms          integer              NULL       
+  template_used                  character varying(100) NULL       
+  ai_generated                   boolean              NOT NULL   DEFAULT false
+  sent_at                        timestamp without time zone NULL       
+  delivered_at                   timestamp without time zone NULL       
+  read_at                        timestamp without time zone NULL       
+  failed_at                      timestamp without time zone NULL       
+  error_message                  text                 NULL       
+  created_at                     timestamp without time zone NOT NULL   DEFAULT CURRENT_TIMESTAMP
+
+Table: favorites
+-----------------------------------------------------------------
+  id                             bigint               NOT NULL   DEFAULT nextval('favorites_id_seq'::regclass)
+  user_id                        bigint               NOT NULL   
+  salon_id                       bigint               NOT NULL   
+  created_at                     timestamp without time zone NULL       
+  updated_at                     timestamp without time zone NULL       
+
+Table: homepage_categories
+-----------------------------------------------------------------
+  id                             bigint               NOT NULL   DEFAULT nextval('homepage_categories_id_seq'::regclass)
+  name                           character varying(255) NOT NULL   
+  slug                           character varying(255) NOT NULL   
+  title                          character varying(255) NOT NULL   
+  description                    text                 NULL       
+  image_url                      character varying(500) NULL       
+  link_type                      character varying(50) NOT NULL   DEFAULT 'search'::character varying
+  link_value                     text                 NULL       
+  is_enabled                     boolean              NOT NULL   DEFAULT true
+  display_order                  integer              NOT NULL   
+  created_at                     timestamp without time zone NULL       
+  updated_at                     timestamp without time zone NULL       
+
+Table: import_batches
+-----------------------------------------------------------------
+  id                             bigint               NOT NULL   DEFAULT nextval('import_batches_id_seq'::regclass)
+  salon_id                       bigint               NOT NULL   
+  user_id                        bigint               NOT NULL   
+  filename                       character varying(255) NOT NULL   
+  file_path                      character varying(255) NULL       
+  total_rows                     integer              NOT NULL   
+  successful_rows                integer              NOT NULL   
+  failed_rows                    integer              NOT NULL   
+  errors                         json                 NULL       
+  service_mapping                json                 NULL       
+  user_creation_stats            json                 NULL       
+  status                         character varying(255) NOT NULL   DEFAULT 'pending'::character varying
+  started_at                     timestamp without time zone NULL       
+  completed_at                   timestamp without time zone NULL       
+  created_at                     timestamp without time zone NULL       
+  updated_at                     timestamp without time zone NULL       
+
+Table: job_ads
+-----------------------------------------------------------------
+  id                             bigint               NOT NULL   DEFAULT nextval('job_ads_id_seq'::regclass)
+  salon_id                       bigint               NULL       
+  created_by                     bigint               NOT NULL   
+  company_name                   character varying(255) NOT NULL   
+  position_title                 character varying(255) NOT NULL   
+  description                    text                 NOT NULL   
+  gender_requirement             character varying(255) NOT NULL   DEFAULT 'any'::character varying
+  contact_email                  character varying(255) NOT NULL   
+  contact_phone                  character varying(255) NULL       
+  city                           character varying(255) NULL       
+  deadline                       date                 NULL       
+  is_active                      boolean              NOT NULL   DEFAULT true
+  created_at                     timestamp without time zone NULL       
+  updated_at                     timestamp without time zone NULL       
+
+Table: locations
+-----------------------------------------------------------------
+  id                             bigint               NOT NULL   DEFAULT nextval('locations_id_seq'::regclass)
+  name                           character varying(255) NOT NULL   
+  city_slug                      character varying(255) NOT NULL   
+  postal_code                    character varying(10) NULL       
+  entity                         character varying(255) NOT NULL   DEFAULT 'FBiH'::character varying
+  canton                         character varying(255) NULL       
+  region                         character varying(255) NULL       
+  latitude                       numeric              NULL       
+  longitude                      numeric              NULL       
+  is_active                      boolean              NOT NULL   DEFAULT true
+  population                     integer              NULL       
+  created_at                     timestamp without time zone NULL       
+  updated_at                     timestamp without time zone NULL       
+
+Table: notifications
+-----------------------------------------------------------------
+  id                             bigint               NOT NULL   DEFAULT nextval('notifications_id_seq'::regclass)
+  type                           character varying(255) NOT NULL   
+  title                          character varying(255) NOT NULL   
+  message                        text                 NOT NULL   
+  recipient_id                   bigint               NOT NULL   
+  related_id                     character varying(255) NULL       
+  created_at                     timestamp without time zone NULL       
+  updated_at                     timestamp without time zone NULL       
+  data                           json                 NULL       
+  is_read                        boolean              NOT NULL   DEFAULT false
+
+Table: personal_access_tokens
+-----------------------------------------------------------------
+  id                             bigint               NOT NULL   DEFAULT nextval('personal_access_tokens_id_seq'::regclass)
+  tokenable_type                 character varying(255) NOT NULL   
+  tokenable_id                   bigint               NOT NULL   
+  name                           text                 NOT NULL   
+  token                          character varying(64) NOT NULL   
+  abilities                      text                 NULL       
+  last_used_at                   timestamp without time zone NULL       
+  expires_at                     timestamp without time zone NULL       
+  created_at                     timestamp without time zone NULL       
+  updated_at                     timestamp without time zone NULL       
+
+Table: reviews
+-----------------------------------------------------------------
+  id                             bigint               NOT NULL   DEFAULT nextval('reviews_id_seq'::regclass)
+  client_id                      bigint               NOT NULL   
+  client_name                    character varying(255) NOT NULL   
+  salon_id                       bigint               NOT NULL   
+  staff_id                       bigint               NULL       
+  appointment_id                 bigint               NULL       
+  rating                         integer              NOT NULL   
+  comment                        text                 NOT NULL   
+  date                           date                 NOT NULL   
+  response                       json                 NULL       
+  is_verified                    boolean              NOT NULL   DEFAULT false
+  created_at                     timestamp without time zone NULL       
+  updated_at                     timestamp without time zone NULL       
+
+Table: salon_breaks
+-----------------------------------------------------------------
+  id                             bigint               NOT NULL   DEFAULT nextval('salon_breaks_id_seq'::regclass)
+  salon_id                       bigint               NOT NULL   
+  title                          character varying(255) NOT NULL   
+  type                           character varying(255) NOT NULL   
+  start_time                     character varying(255) NOT NULL   
+  end_time                       character varying(255) NOT NULL   
+  days                           json                 NULL       
+  date                           date                 NULL       
+  start_date                     date                 NULL       
+  end_date                       date                 NULL       
+  is_active                      boolean              NOT NULL   DEFAULT true
+  created_at                     timestamp without time zone NULL       
+  updated_at                     timestamp without time zone NULL       
+
+Table: salon_images
+-----------------------------------------------------------------
+  id                             bigint               NOT NULL   DEFAULT nextval('salon_images_id_seq'::regclass)
+  salon_id                       bigint               NOT NULL   
+  path                           character varying(255) NOT NULL   
+  order                          integer              NOT NULL   
+  is_primary                     boolean              NOT NULL   DEFAULT false
+  created_at                     timestamp without time zone NULL       
+  updated_at                     timestamp without time zone NULL       
+
+Table: salon_settings
+-----------------------------------------------------------------
+  id                             bigint               NOT NULL   DEFAULT nextval('salon_settings_id_seq'::regclass)
+  salon_id                       bigint               NOT NULL   
+  daily_report_enabled           boolean              NOT NULL   DEFAULT false
+  daily_report_time              time without time zone NOT NULL   DEFAULT '20:00:00'::time without time zone
+  daily_report_email             character varying(255) NULL       
+  daily_report_include_staff     boolean              NOT NULL   DEFAULT true
+  daily_report_include_services  boolean              NOT NULL   DEFAULT true
+  daily_report_include_capacity  boolean              NOT NULL   DEFAULT true
+  daily_report_include_cancellations boolean              NOT NULL   DEFAULT true
+  notification_preferences       json                 NULL       
+  business_hours_override        json                 NULL       
+  created_at                     timestamp without time zone NULL       
+  updated_at                     timestamp without time zone NULL       
+
+Table: salon_vacations
+-----------------------------------------------------------------
+  id                             bigint               NOT NULL   DEFAULT nextval('salon_vacations_id_seq'::regclass)
+  salon_id                       bigint               NOT NULL   
+  title                          character varying(255) NOT NULL   
+  start_date                     date                 NOT NULL   
+  end_date                       date                 NOT NULL   
+  type                           character varying(255) NOT NULL   DEFAULT 'vacation'::character varying
+  notes                          text                 NULL       
+  is_active                      boolean              NOT NULL   DEFAULT true
+  created_at                     timestamp without time zone NULL       
+  updated_at                     timestamp without time zone NULL       
+
+Table: salons
+-----------------------------------------------------------------
+  id                             bigint               NOT NULL   DEFAULT nextval('salons_id_seq'::regclass)
+  owner_id                       bigint               NOT NULL   
+  name                           character varying(255) NOT NULL   
+  description                    text                 NOT NULL   
+  address                        character varying(255) NOT NULL   
+  city                           character varying(255) NOT NULL   
+  postal_code                    character varying(255) NULL       
+  country                        character varying(255) NOT NULL   DEFAULT 'Bosna i Hercegovina'::character varying
+  phone                          character varying(255) NOT NULL   
+  email                          character varying(255) NOT NULL   
+  website                        character varying(255) NULL       
+  working_hours                  json                 NOT NULL   
+  location                       json                 NOT NULL   
+  target_audience                json                 NULL       
+  amenities                      json                 NULL       
+  social_media                   json                 NULL       
+  rating                         double precision     NOT NULL   DEFAULT '0'::double precision
+  review_count                   integer              NOT NULL   
+  is_verified                    boolean              NOT NULL   DEFAULT false
+  status                         character varying(255) NOT NULL   DEFAULT 'pending'::character varying
+  created_at                     timestamp without time zone NULL       
+  updated_at                     timestamp without time zone NULL       
+  deleted_at                     timestamp without time zone NULL       
+  auto_confirm                   smallint             NOT NULL   
+  slug                           character varying(255) NULL       
+  meta_title                     character varying(255) NULL       
+  meta_description               text                 NULL       
+  meta_keywords                  json                 NULL       
+  city_slug                      character varying(255) NULL       
+  latitude                       numeric              NULL       
+  longitude                      numeric              NULL       
+  google_maps_url                character varying(255) NULL       
+  booking_slot_interval          integer              NOT NULL   DEFAULT 30
+  show_service_gallery           smallint             NOT NULL   DEFAULT '1'::smallint
+  category_order                 json                 NULL       
+  email_notifications_enabled    boolean              NOT NULL   DEFAULT true
+
+Table: service_images
+-----------------------------------------------------------------
+  id                             bigint               NOT NULL   DEFAULT nextval('service_images_id_seq'::regclass)
+  service_id                     bigint               NOT NULL   
+  image_path                     character varying(255) NOT NULL   
+  title                          character varying(255) NULL       
+  description                    text                 NULL       
+  order                          integer              NOT NULL   
+  is_featured                    boolean              NOT NULL   DEFAULT false
+  created_at                     timestamp without time zone NULL       
+  updated_at                     timestamp without time zone NULL       
+
+Table: services
+-----------------------------------------------------------------
+  id                             bigint               NOT NULL   DEFAULT nextval('services_id_seq'::regclass)
+  salon_id                       bigint               NOT NULL   
+  name                           character varying(255) NOT NULL   
+  description                    text                 NULL       
+  duration                       integer              NOT NULL   
+  price                          numeric              NOT NULL   
+  category                       character varying(255) NOT NULL   
+  is_active                      boolean              NOT NULL   DEFAULT true
+  created_at                     timestamp without time zone NULL       
+  updated_at                     timestamp without time zone NULL       
+  deleted_at                     timestamp without time zone NULL       
+  discount_price                 numeric              NULL       
+  display_order                  integer              NOT NULL   
+
+Table: sessions
+-----------------------------------------------------------------
+  id                             character varying(255) NOT NULL   
+  user_id                        bigint               NULL       
+  ip_address                     character varying(45) NULL       
+  user_agent                     text                 NULL       
+  payload                        text                 NOT NULL   
+  last_activity                  integer              NOT NULL   
+
+Table: settings
+-----------------------------------------------------------------
+  id                             bigint               NOT NULL   DEFAULT nextval('settings_id_seq'::regclass)
+  created_at                     timestamp without time zone NULL       
+  updated_at                     timestamp without time zone NULL       
+
+Table: social_integrations
+-----------------------------------------------------------------
+  id                             bigint               NOT NULL   DEFAULT nextval('social_integrations_id_seq'::regclass)
+  salon_id                       bigint               NOT NULL   
+  provider                       character varying(20) NOT NULL   DEFAULT 'meta'::character varying
+  platform                       character varying(20) NOT NULL   
+  fb_page_id                     character varying(255) NULL       
+  fb_page_name                   character varying(255) NULL       
+  ig_business_account_id         character varying(255) NULL       
+  ig_username                    character varying(255) NULL       
+  access_token                   text                 NOT NULL   
+  token_type                     character varying(50) NOT NULL   DEFAULT 'page_access_token'::character varying
+  token_expires_at               timestamp without time zone NULL       
+  refresh_token                  text                 NULL       
+  granted_scopes                 json                 NULL       
+  status                         character varying(20) NOT NULL   DEFAULT 'pending'::character varying
+  last_verified_at               timestamp without time zone NULL       
+  last_message_at                timestamp without time zone NULL       
+  connected_by_user_id           bigint               NULL       
+  meta_user_id                   character varying(255) NULL       
+  webhook_verified               boolean              NOT NULL   DEFAULT false
+  auto_reply_enabled             boolean              NOT NULL   DEFAULT true
+  business_hours_only            boolean              NOT NULL   DEFAULT false
+  max_response_time_seconds      integer              NOT NULL   DEFAULT 30
+  created_at                     timestamp without time zone NULL       
+  updated_at                     timestamp without time zone NULL       
+  deleted_at                     timestamp without time zone NULL       
+
+Table: staff
+-----------------------------------------------------------------
+  id                             bigint               NOT NULL   DEFAULT nextval('staff_id_seq'::regclass)
+  user_id                        bigint               NULL       
+  salon_id                       bigint               NOT NULL   
+  name                           character varying(255) NOT NULL   
+  role                           character varying(255) NOT NULL   
+  bio                            text                 NULL       
+  avatar                         character varying(255) NULL       
+  working_hours                  json                 NOT NULL   
+  specialties                    json                 NULL       
+  rating                         double precision     NOT NULL   DEFAULT '0'::double precision
+  review_count                   integer              NOT NULL   
+  is_active                      boolean              NOT NULL   DEFAULT true
+  created_at                     timestamp without time zone NULL       
+  updated_at                     timestamp without time zone NULL       
+  deleted_at                     timestamp without time zone NULL       
+  auto_confirm                   boolean              NOT NULL   DEFAULT false
+  slug                           character varying(255) NULL       
+  bio_long                       text                 NULL       
+  title                          character varying(255) NULL       
+  years_experience               integer              NULL       
+  education                      json                 NULL       
+  achievements                   json                 NULL       
+  languages                      json                 NULL       
+  profile_image                  character varying(255) NULL       
+  instagram                      character varying(255) NULL       
+  facebook                       character varying(255) NULL       
+  tiktok                         character varying(255) NULL       
+  is_public                      boolean              NOT NULL   DEFAULT true
+  accepts_bookings               boolean              NOT NULL   DEFAULT true
+  booking_note                   text                 NULL       
+  display_order                  integer              NOT NULL   
+
+Table: staff_breaks
+-----------------------------------------------------------------
+  id                             bigint               NOT NULL   DEFAULT nextval('staff_breaks_id_seq'::regclass)
+  staff_id                       bigint               NOT NULL   
+  title                          character varying(255) NOT NULL   
+  type                           character varying(255) NOT NULL   
+  start_time                     character varying(255) NOT NULL   
+  end_time                       character varying(255) NOT NULL   
+  days                           json                 NULL       
+  date                           date                 NULL       
+  start_date                     date                 NULL       
+  end_date                       date                 NULL       
+  is_active                      boolean              NOT NULL   DEFAULT true
+  created_at                     timestamp without time zone NULL       
+  updated_at                     timestamp without time zone NULL       
+
+Table: staff_portfolio
+-----------------------------------------------------------------
+  id                             bigint               NOT NULL   DEFAULT nextval('staff_portfolio_id_seq'::regclass)
+  staff_id                       bigint               NOT NULL   
+  image_url                      character varying(255) NOT NULL   
+  title                          character varying(255) NULL       
+  description                    text                 NULL       
+  category                       character varying(255) NULL       
+  tags                           json                 NULL       
+  order                          integer              NOT NULL   
+  is_featured                    boolean              NOT NULL   DEFAULT false
+  created_at                     timestamp without time zone NULL       
+  updated_at                     timestamp without time zone NULL       
+
+Table: staff_services
+-----------------------------------------------------------------
+  id                             bigint               NOT NULL   DEFAULT nextval('staff_services_id_seq'::regclass)
+  staff_id                       bigint               NOT NULL   
+  service_id                     bigint               NOT NULL   
+  created_at                     timestamp without time zone NULL       
+  updated_at                     timestamp without time zone NULL       
+
+Table: staff_vacations
+-----------------------------------------------------------------
+  id                             bigint               NOT NULL   DEFAULT nextval('staff_vacations_id_seq'::regclass)
+  staff_id                       bigint               NOT NULL   
+  title                          character varying(255) NOT NULL   
+  start_date                     date                 NOT NULL   
+  end_date                       date                 NOT NULL   
+  type                           character varying(255) NOT NULL   DEFAULT 'vacation'::character varying
+  notes                          text                 NULL       
+  is_active                      boolean              NOT NULL   DEFAULT true
+  created_at                     timestamp without time zone NULL       
+  updated_at                     timestamp without time zone NULL       
+
+Table: system_settings
+-----------------------------------------------------------------
+  id                             bigint               NOT NULL   DEFAULT nextval('system_settings_id_seq'::regclass)
+  key                            character varying(255) NOT NULL   
+  value                          text                 NULL       
+  type                           character varying(255) NOT NULL   DEFAULT 'string'::character varying
+  group                          character varying(255) NOT NULL   DEFAULT 'general'::character varying
+  description                    text                 NULL       
+  created_at                     timestamp without time zone NULL       
+  updated_at                     timestamp without time zone NULL       
+
+Table: user_consents
+-----------------------------------------------------------------
+  id                             bigint               NOT NULL   DEFAULT nextval('user_consents_id_seq'::regclass)
+  user_id                        bigint               NOT NULL   
+  consent_type                   character varying(255) NOT NULL   
+  accepted                       boolean              NOT NULL   DEFAULT false
+  version                        character varying(255) NOT NULL   DEFAULT '1.0'::character varying
+  ip_address                     character varying(255) NULL       
+  user_agent                     text                 NULL       
+  accepted_at                    timestamp without time zone NULL       
+  revoked_at                     timestamp without time zone NULL       
+  created_at                     timestamp without time zone NULL       
+  updated_at                     timestamp without time zone NULL       
+
+Table: users
+-----------------------------------------------------------------
+  id                             bigint               NOT NULL   DEFAULT nextval('users_id_seq'::regclass)
+  name                           character varying(255) NOT NULL   
+  email                          character varying(255) NOT NULL   
+  phone                          character varying(255) NULL       
+  role                           character varying(255) NOT NULL   DEFAULT 'klijent'::character varying
+  avatar                         character varying(255) NULL       
+  email_verified_at              timestamp without time zone NULL       
+  password                       character varying(255) NOT NULL   
+  remember_token                 character varying(100) NULL       
+  created_at                     timestamp without time zone NULL       
+  updated_at                     timestamp without time zone NULL       
+  city                           character varying(255) NULL       
+  date_of_birth                  date                 NULL       
+  gender                         character varying(255) NULL       
+  is_guest                       boolean              NOT NULL   DEFAULT false
+  created_via                    character varying(255) NULL       
+
+Table: widget_analytics
+-----------------------------------------------------------------
+  id                             bigint               NOT NULL   DEFAULT nextval('widget_analytics_id_seq'::regclass)
+  salon_id                       bigint               NOT NULL   
+  event_type                     character varying(50) NOT NULL   
+  referrer_domain                character varying(255) NULL       
+  ip_address                     inet                 NULL       
+  user_agent                     text                 NULL       
+  metadata                       json                 NULL       
+  created_at                     timestamp without time zone NOT NULL   DEFAULT CURRENT_TIMESTAMP
+  widget_setting_id              bigint               NULL       
+  referrer_url                   character varying(255) NULL       
+
+Table: widget_settings
+-----------------------------------------------------------------
+  id                             bigint               NOT NULL   DEFAULT nextval('widget_settings_id_seq'::regclass)
+  salon_id                       bigint               NOT NULL   
+  api_key                        character varying(64) NOT NULL   
+  is_active                      boolean              NOT NULL   DEFAULT true
+  allowed_domains                json                 NULL       
+  theme                          json                 NULL       
+  settings                       json                 NULL       
+  last_used_at                   timestamp without time zone NULL       
+  total_bookings                 integer              NOT NULL   
+  created_at                     timestamp without time zone NULL       
+  updated_at                     timestamp without time zone NULL       
+

@@ -1,0 +1,12 @@
+# Frizerino API - robots.txt
+# https://api.frizerino.com
+
+User-agent: *
+Disallow: /
+
+# Allow sitemap
+Allow: /sitemap.xml
+Allow: /sitemap-*.xml
+
+# Sitemap
+Sitemap: https://frizerino.com/sitemap.xml
