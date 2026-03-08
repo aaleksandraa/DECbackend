@@ -219,8 +219,21 @@ class DashboardController extends Controller
         $startDate = $request->input('start_date'); // For custom period
         $endDate = $request->input('end_date'); // For custom period
 
+        // Ensure staff filter belongs to this salon (owner view)
+        if ($user->isSalonOwner() && $staffId) {
+            $isStaffInSalon = DB::table('staff')
+                ->where('id', $staffId)
+                ->where('salon_id', $salonId)
+                ->exists();
+
+            if (!$isStaffInSalon) {
+                return response()->json(['message' => 'Invalid staff filter for this salon'], 422);
+            }
+        }
+
         // Build cache key
-        $cacheKey = "salon_analytics_{$salonId}_{$period}";
+        $analyticsVersion = (int) Cache::get("salon_analytics_version_{$salonId}", 1);
+        $cacheKey = "salon_analytics_{$salonId}_v{$analyticsVersion}_{$period}";
         if ($staffId) {
             $cacheKey .= "_staff_{$staffId}";
         }
@@ -357,24 +370,32 @@ class DashboardController extends Controller
             case 'this_month':
                 $start = $now->copy()->startOfMonth();
                 $end = $now->copy()->endOfMonth();
+                $previousStart = $start->copy()->subMonth()->startOfMonth();
+                $previousEnd = $start->copy()->subMonth()->endOfMonth();
                 $label = 'Ovaj mjesec';
                 break;
 
             case 'last_month':
                 $start = $now->copy()->subMonth()->startOfMonth();
                 $end = $now->copy()->subMonth()->endOfMonth();
+                $previousStart = $start->copy()->subMonth()->startOfMonth();
+                $previousEnd = $start->copy()->subMonth()->endOfMonth();
                 $label = 'Prošli mjesec';
                 break;
 
             case 'this_year':
                 $start = $now->copy()->startOfYear();
                 $end = $now->copy()->endOfYear();
+                $previousStart = $start->copy()->subYear()->startOfYear();
+                $previousEnd = $start->copy()->subYear()->endOfYear();
                 $label = 'Ova godina';
                 break;
 
             case 'last_year':
                 $start = $now->copy()->subYear()->startOfYear();
                 $end = $now->copy()->subYear()->endOfYear();
+                $previousStart = $start->copy()->subYear()->startOfYear();
+                $previousEnd = $start->copy()->subYear()->endOfYear();
                 $label = 'Prošla godina';
                 break;
 
@@ -382,6 +403,11 @@ class DashboardController extends Controller
                 if ($customStart && $customEnd) {
                     $start = Carbon::parse($customStart);
                     $end = Carbon::parse($customEnd);
+
+                    if ($end->lessThan($start)) {
+                        [$start, $end] = [$end, $start];
+                    }
+
                     $label = 'Prilagođeni period';
                 } else {
                     // Fallback to this month
@@ -389,32 +415,33 @@ class DashboardController extends Controller
                     $end = $now->copy()->endOfMonth();
                     $label = 'Ovaj mjesec';
                 }
+
+                // For custom period compare against immediately preceding period of same length
+                $durationDays = $start->diffInDays($end, true);
+                $previousEnd = $start->copy()->subDay();
+                $previousStart = $previousEnd->copy()->subDays($durationDays);
                 break;
 
             default:
                 $start = $now->copy()->startOfMonth();
                 $end = $now->copy()->endOfMonth();
+                $previousStart = $start->copy()->subMonth()->startOfMonth();
+                $previousEnd = $start->copy()->subMonth()->endOfMonth();
                 $label = 'Ovaj mjesec';
         }
-
-        // Calculate previous period (same duration)
-        $duration = $end->diffInDays($start);
-        $previousEnd = $start->copy()->subDay();
-        $previousStart = $previousEnd->copy()->subDays($duration);
 
         return [
             'current' => [
                 'start' => $start->format('Y-m-d'),
                 'end' => $end->format('Y-m-d'),
-                'label' => $label
+                'label' => $label,
             ],
             'previous' => [
                 'start' => $previousStart->format('Y-m-d'),
-                'end' => $previousEnd->format('Y-m-d')
-            ]
+                'end' => $previousEnd->format('Y-m-d'),
+            ],
         ];
     }
-
     /**
      * Calculate percentage change between two values.
      */
@@ -445,6 +472,7 @@ class DashboardController extends Controller
         if ($user->isSalonOwner()) {
             $salonId = $user->ownedSalon->id;
             Cache::forget("salon_dashboard_stats_{$salonId}");
+            $this->bumpSalonAnalyticsVersion($salonId);
         } elseif ($user->isStaff()) {
             $staffId = $user->staffProfile->id;
             Cache::forget("staff_dashboard_stats_{$staffId}");
@@ -452,9 +480,21 @@ class DashboardController extends Controller
             // Also clear salon cache if staff belongs to salon
             if ($user->staffProfile->salon_id) {
                 Cache::forget("salon_dashboard_stats_{$user->staffProfile->salon_id}");
+                $this->bumpSalonAnalyticsVersion($user->staffProfile->salon_id);
             }
         }
 
         return response()->json(['message' => 'Cache cleared']);
     }
+
+    /**
+     * Increment analytics cache version for a salon.
+     */
+    private function bumpSalonAnalyticsVersion(int $salonId): void
+    {
+        $versionKey = "salon_analytics_version_{$salonId}";
+        $currentVersion = (int) Cache::get($versionKey, 1);
+        Cache::forever($versionKey, $currentVersion + 1);
+    }
 }
+

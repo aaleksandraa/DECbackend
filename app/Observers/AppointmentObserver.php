@@ -92,10 +92,6 @@ class AppointmentObserver
             ? $appointment->date->format('Y-m-d')
             : $appointment->date;
 
-        // Clear all cache keys for this staff and date
-        // Pattern: available_slots:{staff_id}:{date}:{duration}
-        $pattern = "available_slots:{$appointment->staff_id}:{$dateStr}:*";
-
         // Since Laravel doesn't support wildcard cache deletion easily,
         // we'll clear common durations (15, 30, 45, 60, 90, 120 minutes)
         $commonDurations = [15, 30, 45, 60, 90, 120];
@@ -105,10 +101,29 @@ class AppointmentObserver
             Cache::forget($cacheKey);
         }
 
+        // Clear dashboard summary caches
+        if ($appointment->salon_id) {
+            Cache::forget("salon_dashboard_stats_{$appointment->salon_id}");
+            $this->bumpSalonAnalyticsVersion((int) $appointment->salon_id);
+        }
+        if ($appointment->staff_id) {
+            Cache::forget("staff_dashboard_stats_{$appointment->staff_id}");
+        }
+
         Log::info('AppointmentObserver: Cleared availability cache', [
             'staff_id' => $appointment->staff_id,
             'date' => $dateStr,
             'appointment_id' => $appointment->id
         ]);
+    }
+
+    /**
+     * Increment analytics cache version for a salon.
+     */
+    private function bumpSalonAnalyticsVersion(int $salonId): void
+    {
+        $versionKey = "salon_analytics_version_{$salonId}";
+        $currentVersion = (int) Cache::get($versionKey, 1);
+        Cache::forever($versionKey, $currentVersion + 1);
     }
 }
