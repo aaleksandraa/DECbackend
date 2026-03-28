@@ -140,8 +140,12 @@ class ClientController extends Controller
                 $q->whereRaw('LOWER(users.name) LIKE ?', [$searchLike])
                     ->orWhereRaw('LOWER(users.email) LIKE ?', [$searchLike])
                     ->orWhereRaw('LOWER(COALESCE(users.phone, \'\')) LIKE ?', [$searchLike]);
-            });
+                });
         }
+
+        $recognizedCountCase = Appointment::recognizedCompletedCountCaseExpression('appointments');
+        $recognizedRevenueCase = Appointment::recognizedRevenueCaseExpression('appointments');
+        $recognizedBindings = Appointment::recognizedRevenueBindings();
 
         $query
             ->select([
@@ -152,8 +156,8 @@ class ClientController extends Controller
                 'users.avatar',
             ])
             ->selectRaw('COUNT(appointments.id) as total_appointments')
-            ->selectRaw("SUM(CASE WHEN appointments.status = 'completed' THEN 1 ELSE 0 END) as completed_appointments")
-            ->selectRaw("SUM(CASE WHEN appointments.status = 'completed' THEN COALESCE(appointments.total_price, 0) ELSE 0 END) as total_spent")
+            ->selectRaw("SUM({$recognizedCountCase}) as completed_appointments", $recognizedBindings)
+            ->selectRaw("SUM({$recognizedRevenueCase}) as total_spent", $recognizedBindings)
             ->selectRaw('MAX(appointments.date) as last_visit')
             ->selectRaw('MIN(appointments.created_at) as member_since')
             ->groupBy('users.id', 'users.name', 'users.email', 'users.phone', 'users.avatar');
@@ -247,7 +251,11 @@ class ClientController extends Controller
             ->orderBy('time', 'desc')
             ->get();
 
-        $totalSpent = $appointments->where('status', 'completed')->sum('total_price');
+        $recognizedCompletedAppointments = $appointments->filter(
+            fn (Appointment $appointment) => $appointment->isRecognizedCompleted()
+        );
+
+        $totalSpent = $recognizedCompletedAppointments->sum('total_price');
         $totalAppointments = $appointments->where('status', '!=', 'cancelled')->count();
 
         return response()->json([
@@ -261,16 +269,18 @@ class ClientController extends Controller
             ],
             'stats' => [
                 'total_appointments' => $totalAppointments,
-                'completed_appointments' => $appointments->where('status', 'completed')->count(),
+                'completed_appointments' => $recognizedCompletedAppointments->count(),
                 'cancelled_appointments' => $appointments->where('status', 'cancelled')->count(),
                 'total_spent' => $totalSpent,
             ],
             'appointments' => $appointments->map(function ($appointment) {
+                $effectiveStatus = $appointment->isRecognizedCompleted() ? 'completed' : $appointment->status;
+
                 return [
                     'id' => $appointment->id,
                     'date' => $appointment->date->format('Y-m-d'),
                     'time' => $appointment->time,
-                    'status' => $appointment->status,
+                    'status' => $effectiveStatus,
                     'total_price' => $appointment->total_price,
                     'services' => [$appointment->service ? $appointment->service->name : 'N/A'],
                     'staff' => $appointment->staff && $appointment->staff->user ? $appointment->staff->user->name : null,
@@ -515,4 +525,3 @@ class ClientController extends Controller
         ]);
     }
 }
-

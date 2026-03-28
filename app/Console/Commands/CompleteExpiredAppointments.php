@@ -32,8 +32,8 @@ class CompleteExpiredAppointments extends Command
         $today = $now->format('Y-m-d');
         $currentTime = $now->format('H:i');
 
-        // Find all confirmed/in_progress appointments that have passed their end time
-        $expiredAppointments = Appointment::whereIn('status', ['confirmed', 'in_progress'])
+        // Find all pending/confirmed/in_progress appointments that have passed their end time
+        $expiredAppointments = Appointment::whereIn('status', ['pending', 'confirmed', 'in_progress'])
             ->where(function ($query) use ($today, $currentTime) {
                 // Past dates
                 $query->where('date', '<', $today)

@@ -63,7 +63,7 @@ class DashboardController extends Controller
                 ->whereBetween('date', [$weekAgo, $todayFormatted])
             ;
 
-            $weeklyRevenue = $this->applyRecognizedRevenueFilter($weeklyRevenueQuery)
+            $weeklyRevenue = Appointment::applyRecognizedCompletedFilter($weeklyRevenueQuery)
                 ->sum('total_price');
 
             return [
@@ -175,7 +175,7 @@ class DashboardController extends Controller
                 ->whereBetween('date', [$weekAgo, $todayFormatted])
             ;
 
-            $weeklyRevenue = $this->applyRecognizedRevenueFilter($weeklyRevenueQuery)
+            $weeklyRevenue = Appointment::applyRecognizedCompletedFilter($weeklyRevenueQuery)
                 ->sum('total_price');
 
             return [
@@ -252,8 +252,7 @@ class DashboardController extends Controller
             $ranges = $this->getDateRanges($period, $startDate, $endDate);
             $currentRange = $ranges['current'];
             $previousRange = $ranges['previous'];
-            $today = Carbon::today()->format('Y-m-d');
-            $currentTime = Carbon::now()->format('H:i:s');
+            $referenceNow = Carbon::now();
 
             // Base query
             $currentQuery = Appointment::where('salon_id', $salonId)
@@ -270,32 +269,26 @@ class DashboardController extends Controller
 
             // Current period stats
             $currentTotal = $currentQuery->count();
-            $currentCompleted = $this->applyRecognizedRevenueFilter(
+            $currentCompleted = Appointment::applyRecognizedCompletedFilter(
                 clone $currentQuery,
-                null,
-                $today,
-                $currentTime
+                $referenceNow
             )->count();
-            $currentRevenue = $this->applyRecognizedRevenueFilter(
+            $currentRevenue = Appointment::applyRecognizedCompletedFilter(
                 clone $currentQuery,
-                null,
-                $today,
-                $currentTime
+                $referenceNow
             )->sum('total_price');
             $currentClients = (clone $currentQuery)->distinct('client_id')->count('client_id');
 
             // Previous period stats for comparison
             $previousTotal = $previousQuery->count();
-            $previousRevenue = $this->applyRecognizedRevenueFilter(
+            $previousRevenue = Appointment::applyRecognizedCompletedFilter(
                 clone $previousQuery,
-                null,
-                $today,
-                $currentTime
+                $referenceNow
             )->sum('total_price');
             $previousClients = (clone $previousQuery)->distinct('client_id')->count('client_id');
 
-            $recognizedRevenueCase = $this->recognizedRevenueCaseExpression('appointments');
-            $recognizedRevenueBindings = [$today, $today, $currentTime];
+            $recognizedRevenueCase = Appointment::recognizedRevenueCaseExpression('appointments');
+            $recognizedRevenueBindings = Appointment::recognizedRevenueBindings($referenceNow);
 
             // Top services (with proper joins)
             $topServices = DB::table('appointments')
@@ -382,66 +375,6 @@ class DashboardController extends Controller
         });
 
         return response()->json($analytics);
-    }
-
-    /**
-     * Apply a resilient "recognized revenue" filter:
-     * - Always includes completed appointments
-     * - Also includes confirmed/in_progress appointments whose time has already passed
-     *   (fallback for environments where auto-complete scheduler was not running)
-     */
-    private function applyRecognizedRevenueFilter($query, ?string $table = null, ?string $today = null, ?string $currentTime = null)
-    {
-        $today = $today ?: Carbon::today()->format('Y-m-d');
-        $currentTime = $currentTime ?: Carbon::now()->format('H:i:s');
-
-        $statusColumn = $this->qualifyColumn('status', $table);
-        $dateColumn = $this->qualifyColumn('date', $table);
-        $endTimeColumn = $this->qualifyColumn('end_time', $table);
-        $timeColumn = $this->qualifyColumn('time', $table);
-
-        return $query->where(function ($q) use ($statusColumn, $dateColumn, $endTimeColumn, $timeColumn, $today, $currentTime) {
-            $q->where($statusColumn, 'completed')
-                ->orWhere(function ($sub) use ($statusColumn, $dateColumn, $endTimeColumn, $timeColumn, $today, $currentTime) {
-                    $sub->whereIn($statusColumn, ['confirmed', 'in_progress'])
-                        ->where(function ($timeAware) use ($dateColumn, $endTimeColumn, $timeColumn, $today, $currentTime) {
-                            $timeAware->where($dateColumn, '<', $today)
-                                ->orWhere(function ($todayOnly) use ($dateColumn, $endTimeColumn, $timeColumn, $today, $currentTime) {
-                                    $todayOnly->where($dateColumn, '=', $today)
-                                        ->whereRaw(
-                                            "CAST(COALESCE(NULLIF({$endTimeColumn}, ''), NULLIF({$timeColumn}, ''), '00:00') AS TIME) <= ?",
-                                            [$currentTime]
-                                        );
-                                });
-                        });
-                });
-        });
-    }
-
-    /**
-     * SQL CASE expression used to aggregate recognized revenue in grouped queries.
-     * Uses positional bindings for: [today, today, currentTime].
-     */
-    private function recognizedRevenueCaseExpression(string $table = 'appointments'): string
-    {
-        $statusColumn = $this->qualifyColumn('status', $table);
-        $dateColumn = $this->qualifyColumn('date', $table);
-        $endTimeColumn = $this->qualifyColumn('end_time', $table);
-        $timeColumn = $this->qualifyColumn('time', $table);
-        $priceColumn = $this->qualifyColumn('total_price', $table);
-
-        return "CASE WHEN {$statusColumn} = 'completed'
-            OR ({$statusColumn} IN ('confirmed', 'in_progress')
-                AND ({$dateColumn} < ? OR ({$dateColumn} = ?
-                    AND CAST(COALESCE(NULLIF({$endTimeColumn}, ''), NULLIF({$timeColumn}, ''), '00:00') AS TIME) <= ?)))
-            THEN COALESCE({$priceColumn}, 0)
-            ELSE 0
-        END";
-    }
-
-    private function qualifyColumn(string $column, ?string $table = null): string
-    {
-        return $table ? "{$table}.{$column}" : $column;
     }
 
     /**

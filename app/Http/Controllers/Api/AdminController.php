@@ -48,11 +48,11 @@ class AdminController extends Controller
         $totalAppointments = Appointment::count();
         $pendingAppointments = Appointment::where('status', 'pending')->count();
         $confirmedAppointments = Appointment::where('status', 'confirmed')->count();
-        $completedAppointments = Appointment::where('status', 'completed')->count();
+        $completedAppointments = Appointment::applyRecognizedCompletedFilter(Appointment::query())->count();
         $cancelledAppointments = Appointment::where('status', 'cancelled')->count();
 
-        // Calculate platform revenue (10% of completed appointments)
-        $totalRevenue = Appointment::where('status', 'completed')->sum('total_price');
+        // Calculate platform revenue (10% of recognized completed appointments)
+        $totalRevenue = Appointment::applyRecognizedCompletedFilter(Appointment::query())->sum('total_price');
         $platformRevenue = $totalRevenue * 0.1;
 
         return response()->json([
@@ -253,14 +253,15 @@ class AdminController extends Controller
             ->get();
 
         // Get revenue by day - PostgreSQL compatible
-        $revenue = Appointment::where('status', 'completed')
+        $revenueQuery = Appointment::query()
             ->whereBetween('created_at', [$startDate, $endDate])
             ->selectRaw('DATE(created_at) as date')
             ->selectRaw('SUM(total_price) as total')
             ->selectRaw('SUM(total_price) * 0.1 as platform')
             ->groupByRaw('DATE(created_at)')
-            ->orderByRaw('DATE(created_at)')
-            ->get();
+            ->orderByRaw('DATE(created_at)');
+
+        $revenue = Appointment::applyRecognizedCompletedFilter($revenueQuery)->get();
 
         // Get top cities
         $topCities = Salon::selectRaw('city')

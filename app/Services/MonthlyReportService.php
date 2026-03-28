@@ -45,16 +45,16 @@ class MonthlyReportService
      */
     private function getOverview(Salon $salon, Carbon $startDate, Carbon $endDate): array
     {
-        // Get completed appointments for revenue
-        $completedAppointments = Appointment::where('salon_id', $salon->id)
+        // Get recognized-completed appointments for revenue
+        $completedAppointmentsQuery = Appointment::where('salon_id', $salon->id)
             ->whereBetween('date', [$startDate->format('Y-m-d'), $endDate->format('Y-m-d')])
-            ->where('status', 'completed')
-            ->get();
+        ;
+        $completedAppointments = Appointment::applyRecognizedCompletedFilter($completedAppointmentsQuery)->get();
 
         // Get all appointments for counts
         $allAppointments = Appointment::where('salon_id', $salon->id)
             ->whereBetween('date', [$startDate->format('Y-m-d'), $endDate->format('Y-m-d')])
-            ->whereIn('status', ['completed', 'in_progress', 'confirmed'])
+            ->whereIn('status', ['pending', 'confirmed', 'in_progress', 'completed'])
             ->get();
 
         $totalRevenue = $completedAppointments->sum('total_price');
@@ -71,10 +71,10 @@ class MonthlyReportService
         $prevMonthStart = $startDate->copy()->subMonth()->startOfMonth();
         $prevMonthEnd = $startDate->copy()->subMonth()->endOfMonth();
 
-        $prevMonthRevenue = Appointment::where('salon_id', $salon->id)
+        $prevMonthRevenueQuery = Appointment::where('salon_id', $salon->id)
             ->whereBetween('date', [$prevMonthStart->format('Y-m-d'), $prevMonthEnd->format('Y-m-d')])
-            ->where('status', 'completed')
-            ->sum('total_price');
+        ;
+        $prevMonthRevenue = Appointment::applyRecognizedCompletedFilter($prevMonthRevenueQuery)->sum('total_price');
 
         $revenueGrowth = null;
         if ($prevMonthRevenue > 0) {
@@ -106,9 +106,8 @@ class MonthlyReportService
      */
     private function getStaffPerformance(Salon $salon, Carbon $startDate, Carbon $endDate): array
     {
-        $staffPerformance = Appointment::where('salon_id', $salon->id)
+        $staffPerformanceQuery = Appointment::where('salon_id', $salon->id)
             ->whereBetween('date', [$startDate->format('Y-m-d'), $endDate->format('Y-m-d')])
-            ->where('status', 'completed')
             ->with('staff:id,name')
             ->select(
                 'staff_id',
@@ -117,8 +116,9 @@ class MonthlyReportService
                 DB::raw('AVG(total_price) as avg_revenue')
             )
             ->groupBy('staff_id')
-            ->orderByDesc('total_revenue')
-            ->get();
+            ->orderByDesc('total_revenue');
+
+        $staffPerformance = Appointment::applyRecognizedCompletedFilter($staffPerformanceQuery)->get();
 
         $totalRevenue = $staffPerformance->sum('total_revenue');
 
@@ -148,9 +148,8 @@ class MonthlyReportService
      */
     private function getServiceInsights(Salon $salon, Carbon $startDate, Carbon $endDate): array
     {
-        $serviceStats = Appointment::where('salon_id', $salon->id)
+        $serviceStatsQuery = Appointment::where('salon_id', $salon->id)
             ->whereBetween('date', [$startDate->format('Y-m-d'), $endDate->format('Y-m-d')])
-            ->where('status', 'completed')
             ->with('service:id,name')
             ->select(
                 'service_id',
@@ -160,8 +159,9 @@ class MonthlyReportService
             )
             ->groupBy('service_id')
             ->orderByDesc('total_revenue')
-            ->limit(10)
-            ->get();
+            ->limit(10);
+
+        $serviceStats = Appointment::applyRecognizedCompletedFilter($serviceStatsQuery)->get();
 
         $totalRevenue = $serviceStats->sum('total_revenue');
         $totalCount = $serviceStats->sum('service_count');
@@ -194,17 +194,17 @@ class MonthlyReportService
      */
     private function getDailyBreakdown(Salon $salon, Carbon $startDate, Carbon $endDate): array
     {
-        $dailyStats = Appointment::where('salon_id', $salon->id)
+        $dailyStatsQuery = Appointment::where('salon_id', $salon->id)
             ->whereBetween('date', [$startDate->format('Y-m-d'), $endDate->format('Y-m-d')])
-            ->where('status', 'completed')
             ->select(
                 'date',
                 DB::raw('COUNT(*) as appointment_count'),
                 DB::raw('SUM(total_price) as daily_revenue')
             )
             ->groupBy('date')
-            ->orderBy('date')
-            ->get();
+            ->orderBy('date');
+
+        $dailyStats = Appointment::applyRecognizedCompletedFilter($dailyStatsQuery)->get();
 
         $days = $dailyStats->map(function ($item) {
             $date = Carbon::parse($item->date);
@@ -244,17 +244,17 @@ class MonthlyReportService
     private function getTrends(Salon $salon, Carbon $startDate, Carbon $endDate): array
     {
         // Weekly breakdown
-        $weeklyStats = Appointment::where('salon_id', $salon->id)
+        $weeklyStatsQuery = Appointment::where('salon_id', $salon->id)
             ->whereBetween('date', [$startDate->format('Y-m-d'), $endDate->format('Y-m-d')])
-            ->where('status', 'completed')
             ->select(
                 DB::raw('EXTRACT(WEEK FROM date) as week_number'),
                 DB::raw('COUNT(*) as appointment_count'),
                 DB::raw('SUM(total_price) as weekly_revenue')
             )
             ->groupBy('week_number')
-            ->orderBy('week_number')
-            ->get();
+            ->orderBy('week_number');
+
+        $weeklyStats = Appointment::applyRecognizedCompletedFilter($weeklyStatsQuery)->get();
 
         $weeks = $weeklyStats->map(function ($item) {
             return [
@@ -266,17 +266,17 @@ class MonthlyReportService
         })->toArray();
 
         // Day of week analysis
-        $dayOfWeekStats = Appointment::where('salon_id', $salon->id)
+        $dayOfWeekStatsQuery = Appointment::where('salon_id', $salon->id)
             ->whereBetween('date', [$startDate->format('Y-m-d'), $endDate->format('Y-m-d')])
-            ->where('status', 'completed')
             ->select(
                 DB::raw('EXTRACT(DOW FROM date) as day_of_week'),
                 DB::raw('COUNT(*) as appointment_count'),
                 DB::raw('SUM(total_price) as revenue')
             )
             ->groupBy('day_of_week')
-            ->orderBy('day_of_week')
-            ->get();
+            ->orderBy('day_of_week');
+
+        $dayOfWeekStats = Appointment::applyRecognizedCompletedFilter($dayOfWeekStatsQuery)->get();
 
         $dayNames = ['Nedjelja', 'Ponedjeljak', 'Utorak', 'Srijeda', 'Četvrtak', 'Petak', 'Subota'];
 
@@ -300,9 +300,8 @@ class MonthlyReportService
      */
     private function getTopClients(Salon $salon, Carbon $startDate, Carbon $endDate): array
     {
-        $topClients = Appointment::where('salon_id', $salon->id)
+        $topClientsQuery = Appointment::where('salon_id', $salon->id)
             ->whereBetween('date', [$startDate->format('Y-m-d'), $endDate->format('Y-m-d')])
-            ->where('status', 'completed')
             ->whereNotNull('client_id')
             ->with('client:id,name,email')
             ->select(
@@ -312,8 +311,9 @@ class MonthlyReportService
             )
             ->groupBy('client_id')
             ->orderByDesc('total_spent')
-            ->limit(10)
-            ->get();
+            ->limit(10);
+
+        $topClients = Appointment::applyRecognizedCompletedFilter($topClientsQuery)->get();
 
         $clients = $topClients->map(function ($item) {
             return [

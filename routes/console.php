@@ -38,7 +38,7 @@ Schedule::command('appointments:send-reminders')
 // Auto-complete expired appointments
 // Runs every 15 minutes to keep analytics and revenue consistent.
 Schedule::command('appointments:complete-expired')
-    ->everyFifteenMinutes()
+    ->everyFiveMinutes()
     ->timezone('Europe/Sarajevo')
     ->withoutOverlapping()
     ->onFailure(function () {

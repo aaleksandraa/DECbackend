@@ -44,7 +44,7 @@ class AppointmentResource extends JsonResource
             'date' => $this->date->format('d.m.Y'),
             'time' => $this->time,
             'end_time' => $this->end_time,
-            'status' => $this->status,
+            'status' => $this->isRecognizedCompleted() ? 'completed' : $this->status,
             'notes' => $this->notes,
             'total_price' => $this->total_price,
             'payment_status' => $this->payment_status,

@@ -55,16 +55,16 @@ class DailyReportService
     {
         $dateStr = $date->format('Y-m-d');
 
-        // Get completed appointments for revenue
-        $completedAppointments = Appointment::where('salon_id', $salon->id)
+        // Get recognized-completed appointments for revenue
+        $completedAppointmentsQuery = Appointment::where('salon_id', $salon->id)
             ->whereDate('date', $dateStr)
-            ->where('status', 'completed')
-            ->get();
+        ;
+        $completedAppointments = Appointment::applyRecognizedCompletedFilter($completedAppointmentsQuery)->get();
 
         // Get all appointments for counts
         $allAppointments = Appointment::where('salon_id', $salon->id)
             ->whereDate('date', $dateStr)
-            ->whereIn('status', ['completed', 'in_progress', 'confirmed'])
+            ->whereIn('status', ['pending', 'confirmed', 'in_progress', 'completed'])
             ->get();
 
         $totalRevenue = $completedAppointments->sum('total_price');
@@ -76,10 +76,10 @@ class DailyReportService
         $weekAgo = $date->copy()->subDays(7)->format('Y-m-d');
         $yesterday = $date->copy()->subDay()->format('Y-m-d');
 
-        $avgRevenue = Appointment::where('salon_id', $salon->id)
+        $avgRevenueQuery = Appointment::where('salon_id', $salon->id)
             ->whereBetween('date', [$weekAgo, $yesterday])
-            ->where('status', 'completed')
-            ->avg('total_price');
+        ;
+        $avgRevenue = Appointment::applyRecognizedCompletedFilter($avgRevenueQuery)->avg('total_price');
 
         $trend = null;
         if ($avgRevenue > 0 && $totalAppointments > 0) {
@@ -108,9 +108,8 @@ class DailyReportService
     {
         $dateStr = $date->format('Y-m-d');
 
-        $staffPerformance = Appointment::where('salon_id', $salon->id)
+        $staffPerformanceQuery = Appointment::where('salon_id', $salon->id)
             ->whereDate('date', $dateStr)
-            ->where('status', 'completed')
             ->with('staff:id,name')
             ->select(
                 'staff_id',
@@ -118,8 +117,9 @@ class DailyReportService
                 DB::raw('SUM(total_price) as total_revenue')
             )
             ->groupBy('staff_id')
-            ->orderByDesc('total_revenue')
-            ->get();
+            ->orderByDesc('total_revenue');
+
+        $staffPerformance = Appointment::applyRecognizedCompletedFilter($staffPerformanceQuery)->get();
 
         $totalRevenue = $staffPerformance->sum('total_revenue');
 
@@ -149,9 +149,8 @@ class DailyReportService
     {
         $dateStr = $date->format('Y-m-d');
 
-        $serviceStats = Appointment::where('salon_id', $salon->id)
+        $serviceStatsQuery = Appointment::where('salon_id', $salon->id)
             ->whereDate('date', $dateStr)
-            ->where('status', 'completed')
             ->with('service:id,name')
             ->select(
                 'service_id',
@@ -160,8 +159,9 @@ class DailyReportService
             )
             ->groupBy('service_id')
             ->orderByDesc('service_count')
-            ->limit(5)
-            ->get();
+            ->limit(5);
+
+        $serviceStats = Appointment::applyRecognizedCompletedFilter($serviceStatsQuery)->get();
 
         $totalRevenue = $serviceStats->sum('total_revenue');
         $totalCount = $serviceStats->sum('service_count');
@@ -217,7 +217,7 @@ class DailyReportService
         // Get appointment statistics
         $occupiedCount = Appointment::where('salon_id', $salon->id)
             ->whereDate('date', $dateStr)
-            ->whereIn('status', ['completed', 'in_progress', 'confirmed'])
+            ->whereIn('status', ['pending', 'confirmed', 'in_progress', 'completed'])
             ->count();
 
         $cancelledCount = Appointment::where('salon_id', $salon->id)
@@ -261,7 +261,7 @@ class DailyReportService
                 ->whereDate('date', $dateStr)
                 ->whereTime('time', '>=', $period['start'])
                 ->whereTime('time', '<', $period['end'])
-                ->whereIn('status', ['completed', 'in_progress', 'confirmed'])
+                ->whereIn('status', ['pending', 'confirmed', 'in_progress', 'completed'])
                 ->count();
 
             // Calculate period capacity (4 hours = 8 slots of 30 min)

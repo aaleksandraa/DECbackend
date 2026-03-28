@@ -2,6 +2,7 @@
 
 namespace App\Models;
 
+use Carbon\Carbon;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
@@ -12,6 +13,8 @@ use Illuminate\Support\Facades\DB;
 class Appointment extends Model
 {
     use HasFactory, SoftDeletes;
+
+    public const REVENUE_BASE_STATUSES = ['pending', 'confirmed', 'in_progress'];
 
     /**
      * The attributes that are mass assignable.
@@ -227,5 +230,134 @@ class Appointment extends Model
         $endDateTime = \Carbon\Carbon::parse($this->date->format('Y-m-d') . ' ' . $this->end_time);
 
         return $now->greaterThan($endDateTime);
+    }
+
+    /**
+     * Check whether this appointment should be treated as completed for metrics/revenue.
+     * Includes historical confirmed/in_progress appointments whose time has passed.
+     */
+    public function isRecognizedCompleted(?Carbon $referenceTime = null): bool
+    {
+        if ($this->status === 'completed') {
+            return true;
+        }
+
+        if (!in_array((string) $this->status, self::REVENUE_BASE_STATUSES, true)) {
+            return false;
+        }
+
+        $reference = $referenceTime ?: Carbon::now();
+        $dateValue = $this->date instanceof Carbon ? $this->date->copy() : Carbon::parse((string) $this->date);
+        $referenceDate = $reference->copy()->startOfDay();
+
+        if ($dateValue->lt($referenceDate)) {
+            return true;
+        }
+
+        if (!$dateValue->isSameDay($reference)) {
+            return false;
+        }
+
+        $endOrStart = trim((string) ($this->end_time ?: $this->time ?: '00:00:00'));
+        $appointmentDateTime = Carbon::parse($dateValue->format('Y-m-d').' '.$endOrStart);
+
+        return $appointmentDateTime->lessThanOrEqualTo($reference);
+    }
+
+    /**
+     * Apply "recognized completed" filter to a query.
+     * Works with both Eloquent and query builders.
+     */
+    public static function applyRecognizedCompletedFilter($query, ?Carbon $referenceTime = null, ?string $table = null)
+    {
+        $reference = $referenceTime ?: Carbon::now();
+        $today = $reference->format('Y-m-d');
+        $currentTime = $reference->format('H:i:s');
+
+        $statusColumn = self::qualifyRecognitionColumn('status', $table);
+        $dateColumn = self::qualifyRecognitionColumn('date', $table);
+        $endTimeColumn = self::qualifyRecognitionColumn('end_time', $table);
+        $timeColumn = self::qualifyRecognitionColumn('time', $table);
+
+        return $query->where(function ($q) use ($statusColumn, $dateColumn, $endTimeColumn, $timeColumn, $today, $currentTime) {
+            $q->where($statusColumn, 'completed')
+                ->orWhere(function ($sub) use ($statusColumn, $dateColumn, $endTimeColumn, $timeColumn, $today, $currentTime) {
+                    $sub->whereIn($statusColumn, self::REVENUE_BASE_STATUSES)
+                        ->where(function ($timeAware) use ($dateColumn, $endTimeColumn, $timeColumn, $today, $currentTime) {
+                            $timeAware->where($dateColumn, '<', $today)
+                                ->orWhere(function ($todayOnly) use ($dateColumn, $endTimeColumn, $timeColumn, $today, $currentTime) {
+                                    $todayOnly->where($dateColumn, '=', $today)
+                                        ->whereRaw(
+                                            "CAST(COALESCE(NULLIF({$endTimeColumn}, ''), NULLIF({$timeColumn}, ''), '00:00') AS TIME) <= ?",
+                                            [$currentTime]
+                                        );
+                                });
+                        });
+                });
+        });
+    }
+
+    /**
+     * CASE expression for revenue aggregation using recognized-completed logic.
+     * Bindings: [today, today, currentTime]
+     */
+    public static function recognizedRevenueCaseExpression(string $table = 'appointments'): string
+    {
+        $statusColumn = self::qualifyRecognitionColumn('status', $table);
+        $dateColumn = self::qualifyRecognitionColumn('date', $table);
+        $endTimeColumn = self::qualifyRecognitionColumn('end_time', $table);
+        $timeColumn = self::qualifyRecognitionColumn('time', $table);
+        $priceColumn = self::qualifyRecognitionColumn('total_price', $table);
+        $statusList = self::sqlInList(self::REVENUE_BASE_STATUSES);
+
+        return "CASE WHEN {$statusColumn} = 'completed'
+            OR ({$statusColumn} IN ({$statusList})
+                AND ({$dateColumn} < ? OR ({$dateColumn} = ?
+                    AND CAST(COALESCE(NULLIF({$endTimeColumn}, ''), NULLIF({$timeColumn}, ''), '00:00') AS TIME) <= ?)))
+            THEN COALESCE({$priceColumn}, 0)
+            ELSE 0
+        END";
+    }
+
+    /**
+     * CASE expression for count aggregation using recognized-completed logic.
+     * Bindings: [today, today, currentTime]
+     */
+    public static function recognizedCompletedCountCaseExpression(string $table = 'appointments'): string
+    {
+        $statusColumn = self::qualifyRecognitionColumn('status', $table);
+        $dateColumn = self::qualifyRecognitionColumn('date', $table);
+        $endTimeColumn = self::qualifyRecognitionColumn('end_time', $table);
+        $timeColumn = self::qualifyRecognitionColumn('time', $table);
+        $statusList = self::sqlInList(self::REVENUE_BASE_STATUSES);
+
+        return "CASE WHEN {$statusColumn} = 'completed'
+            OR ({$statusColumn} IN ({$statusList})
+                AND ({$dateColumn} < ? OR ({$dateColumn} = ?
+                    AND CAST(COALESCE(NULLIF({$endTimeColumn}, ''), NULLIF({$timeColumn}, ''), '00:00') AS TIME) <= ?)))
+            THEN 1
+            ELSE 0
+        END";
+    }
+
+    /**
+     * Bindings for recognized CASE expressions.
+     */
+    public static function recognizedRevenueBindings(?Carbon $referenceTime = null): array
+    {
+        $reference = $referenceTime ?: Carbon::now();
+        $today = $reference->format('Y-m-d');
+
+        return [$today, $today, $reference->format('H:i:s')];
+    }
+
+    private static function qualifyRecognitionColumn(string $column, ?string $table = null): string
+    {
+        return $table ? "{$table}.{$column}" : $column;
+    }
+
+    private static function sqlInList(array $values): string
+    {
+        return implode(', ', array_map(fn ($value) => "'".str_replace("'", "''", (string) $value)."'", $values));
     }
 }
