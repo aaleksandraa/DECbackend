@@ -275,7 +275,16 @@ class AuthController extends Controller
         // Regenerate session if available (stateful requests)
         if ($request->hasSession()) {
             $request->session()->regenerate();
+            // Force save to ensure persistence in environments with custom proxy/session behavior.
+            $request->session()->put('auth_user_id', $user->id);
+            $request->session()->save();
         }
+
+        // Resilient fallback: short-lived Sanctum token stored in HttpOnly cookie.
+        // Keeps auth functional if session storage/proxy intermittently fails.
+        $user->tokens()->where('name', 'spa-cookie')->delete();
+        $accessToken = $user->createToken('spa-cookie')->plainTextToken;
+        $tokenTtlMinutes = (int) config('sanctum.expiration', 60 * 24 * 7);
 
         // Load related data based on user role with status for pending check
         if ($user->role === 'salon') {
@@ -300,10 +309,24 @@ class AuthController extends Controller
             }
         }
 
-        return response()->json([
+        $response = response()->json([
             'user' => $user,
             'message' => 'Login successful',
         ]);
+
+        $response->cookie(
+            'spa_auth',
+            $accessToken,
+            $tokenTtlMinutes,
+            '/',
+            config('session.domain'),
+            (bool) config('session.secure'),
+            true,
+            false,
+            config('session.same_site', 'lax')
+        );
+
+        return $response;
     }
 
     /**
@@ -311,6 +334,11 @@ class AuthController extends Controller
      */
     public function logout(Request $request): JsonResponse
     {
+        $currentToken = $request->user()?->currentAccessToken();
+        if ($currentToken) {
+            $currentToken->delete();
+        }
+
         Auth::guard('web')->logout();
 
         if ($request->hasSession()) {
@@ -318,7 +346,10 @@ class AuthController extends Controller
             $request->session()->regenerateToken();
         }
 
-        return response()->json(['message' => 'Odjavljen']);
+        $response = response()->json(['message' => 'Odjavljen']);
+        $response->withoutCookie('spa_auth', '/', config('session.domain'));
+
+        return $response;
     }
 
     /**

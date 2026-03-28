@@ -3,6 +3,7 @@
 use App\Http\Controllers\Api\AdminController;
 use App\Http\Controllers\Api\Admin\ImportController;
 use App\Http\Controllers\Api\Admin\HomepageCategoryController as AdminHomepageCategoryController;
+use App\Http\Middleware\InjectSanctumBearerFromCookie;
 use App\Http\Controllers\Api\AppointmentController;
 use App\Http\Controllers\Api\AuthController;
 use App\Http\Controllers\Api\CalendarFeedController;
@@ -182,7 +183,7 @@ Route::prefix('v1')->group(function () {
 
     // Protected routes with standard rate limiting (120 per minute)
     // Keep `web` middleware so session handling is consistent with login/register routes.
-    Route::middleware(['web', 'auth:sanctum', 'throttle:120,1'])->group(function () {
+    Route::middleware(['web', InjectSanctumBearerFromCookie::class, 'auth:sanctum', 'throttle:120,1'])->group(function () {
         // Auth routes
         Route::post('/logout', [AuthController::class, 'logout']);
         Route::get('/user', [AuthController::class, 'user']);
@@ -475,7 +476,7 @@ Route::middleware('throttle:120,1')->group(function () {
     Route::get('/public/job-ads/{id}', [JobAdController::class, 'show']);
 });
 
-Route::middleware(['web', 'auth:sanctum', 'throttle:120,1'])->group(function () {
+Route::middleware(['web', InjectSanctumBearerFromCookie::class, 'auth:sanctum', 'throttle:120,1'])->group(function () {
     Route::post('/logout', [AuthController::class, 'logout']);
     Route::get('/user', [AuthController::class, 'user']);
     Route::put('/user/profile', [AuthController::class, 'updateProfile']);
