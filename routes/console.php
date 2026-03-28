@@ -34,3 +34,13 @@ Schedule::command('appointments:send-reminders')
     ->onFailure(function () {
         \Illuminate\Support\Facades\Log::error('Appointment reminders failed to send');
     });
+
+// Auto-complete expired appointments
+// Runs every 15 minutes to keep analytics and revenue consistent.
+Schedule::command('appointments:complete-expired')
+    ->everyFifteenMinutes()
+    ->timezone('Europe/Sarajevo')
+    ->withoutOverlapping()
+    ->onFailure(function () {
+        \Illuminate\Support\Facades\Log::error('Auto-complete expired appointments command failed');
+    });

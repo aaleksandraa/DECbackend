@@ -56,12 +56,14 @@ class DashboardController extends Controller
                 ->whereBetween('date', [$monthStart, $monthEnd])
                 ->count();
 
-            // This week's revenue (last 7 days, completed only)
+            // This week's revenue (completed + expired confirmed/in_progress fallback)
             $weekAgo = $today->copy()->subDays(7)->format('Y-m-d');
 
-            $weeklyRevenue = Appointment::where('salon_id', $salonId)
+            $weeklyRevenueQuery = Appointment::where('salon_id', $salonId)
                 ->whereBetween('date', [$weekAgo, $todayFormatted])
-                ->where('status', 'completed')
+            ;
+
+            $weeklyRevenue = $this->applyRecognizedRevenueFilter($weeklyRevenueQuery)
                 ->sum('total_price');
 
             return [
@@ -166,12 +168,14 @@ class DashboardController extends Controller
                 ->whereBetween('date', [$monthStart, $monthEnd])
                 ->count();
 
-            // This week's revenue (last 7 days, completed only)
+            // This week's revenue (completed + expired confirmed/in_progress fallback)
             $weekAgo = $today->copy()->subDays(7)->format('Y-m-d');
 
-            $weeklyRevenue = Appointment::where('staff_id', $staffId)
+            $weeklyRevenueQuery = Appointment::where('staff_id', $staffId)
                 ->whereBetween('date', [$weekAgo, $todayFormatted])
-                ->where('status', 'completed')
+            ;
+
+            $weeklyRevenue = $this->applyRecognizedRevenueFilter($weeklyRevenueQuery)
                 ->sum('total_price');
 
             return [
@@ -233,7 +237,8 @@ class DashboardController extends Controller
 
         // Build cache key
         $analyticsVersion = (int) Cache::get("salon_analytics_version_{$salonId}", 1);
-        $cacheKey = "salon_analytics_{$salonId}_v{$analyticsVersion}_{$period}";
+        $analyticsLogicVersion = 2; // bump when analytics calculation logic changes
+        $cacheKey = "salon_analytics_l{$analyticsLogicVersion}_{$salonId}_v{$analyticsVersion}_{$period}";
         if ($staffId) {
             $cacheKey .= "_staff_{$staffId}";
         }
@@ -247,6 +252,8 @@ class DashboardController extends Controller
             $ranges = $this->getDateRanges($period, $startDate, $endDate);
             $currentRange = $ranges['current'];
             $previousRange = $ranges['previous'];
+            $today = Carbon::today()->format('Y-m-d');
+            $currentTime = Carbon::now()->format('H:i:s');
 
             // Base query
             $currentQuery = Appointment::where('salon_id', $salonId)
@@ -263,14 +270,32 @@ class DashboardController extends Controller
 
             // Current period stats
             $currentTotal = $currentQuery->count();
-            $currentCompleted = (clone $currentQuery)->where('status', 'completed')->count();
-            $currentRevenue = (clone $currentQuery)->where('status', 'completed')->sum('total_price');
+            $currentCompleted = $this->applyRecognizedRevenueFilter(
+                clone $currentQuery,
+                null,
+                $today,
+                $currentTime
+            )->count();
+            $currentRevenue = $this->applyRecognizedRevenueFilter(
+                clone $currentQuery,
+                null,
+                $today,
+                $currentTime
+            )->sum('total_price');
             $currentClients = (clone $currentQuery)->distinct('client_id')->count('client_id');
 
             // Previous period stats for comparison
             $previousTotal = $previousQuery->count();
-            $previousRevenue = (clone $previousQuery)->where('status', 'completed')->sum('total_price');
+            $previousRevenue = $this->applyRecognizedRevenueFilter(
+                clone $previousQuery,
+                null,
+                $today,
+                $currentTime
+            )->sum('total_price');
             $previousClients = (clone $previousQuery)->distinct('client_id')->count('client_id');
+
+            $recognizedRevenueCase = $this->recognizedRevenueCaseExpression('appointments');
+            $recognizedRevenueBindings = [$today, $today, $currentTime];
 
             // Top services (with proper joins)
             $topServices = DB::table('appointments')
@@ -284,8 +309,8 @@ class DashboardController extends Controller
                     'services.id',
                     'services.name',
                     DB::raw('COUNT(*) as bookings'),
-                    DB::raw('SUM(CASE WHEN appointments.status = \'completed\' THEN appointments.total_price ELSE 0 END) as revenue')
                 )
+                ->selectRaw("SUM({$recognizedRevenueCase}) as revenue", $recognizedRevenueBindings)
                 ->groupBy('services.id', 'services.name')
                 ->orderByDesc('bookings')
                 ->limit(5)
@@ -303,8 +328,8 @@ class DashboardController extends Controller
                         'staff.name',
                         'staff.rating',
                         DB::raw('COUNT(*) as bookings'),
-                        DB::raw('SUM(CASE WHEN appointments.status = \'completed\' THEN appointments.total_price ELSE 0 END) as revenue')
                     )
+                    ->selectRaw("SUM({$recognizedRevenueCase}) as revenue", $recognizedRevenueBindings)
                     ->groupBy('staff.id', 'staff.name', 'staff.rating')
                     ->orderByDesc('bookings')
                     ->limit(5)
@@ -357,6 +382,66 @@ class DashboardController extends Controller
         });
 
         return response()->json($analytics);
+    }
+
+    /**
+     * Apply a resilient "recognized revenue" filter:
+     * - Always includes completed appointments
+     * - Also includes confirmed/in_progress appointments whose time has already passed
+     *   (fallback for environments where auto-complete scheduler was not running)
+     */
+    private function applyRecognizedRevenueFilter($query, ?string $table = null, ?string $today = null, ?string $currentTime = null)
+    {
+        $today = $today ?: Carbon::today()->format('Y-m-d');
+        $currentTime = $currentTime ?: Carbon::now()->format('H:i:s');
+
+        $statusColumn = $this->qualifyColumn('status', $table);
+        $dateColumn = $this->qualifyColumn('date', $table);
+        $endTimeColumn = $this->qualifyColumn('end_time', $table);
+        $timeColumn = $this->qualifyColumn('time', $table);
+
+        return $query->where(function ($q) use ($statusColumn, $dateColumn, $endTimeColumn, $timeColumn, $today, $currentTime) {
+            $q->where($statusColumn, 'completed')
+                ->orWhere(function ($sub) use ($statusColumn, $dateColumn, $endTimeColumn, $timeColumn, $today, $currentTime) {
+                    $sub->whereIn($statusColumn, ['confirmed', 'in_progress'])
+                        ->where(function ($timeAware) use ($dateColumn, $endTimeColumn, $timeColumn, $today, $currentTime) {
+                            $timeAware->where($dateColumn, '<', $today)
+                                ->orWhere(function ($todayOnly) use ($dateColumn, $endTimeColumn, $timeColumn, $today, $currentTime) {
+                                    $todayOnly->where($dateColumn, '=', $today)
+                                        ->whereRaw(
+                                            "CAST(COALESCE(NULLIF({$endTimeColumn}, ''), NULLIF({$timeColumn}, ''), '00:00') AS TIME) <= ?",
+                                            [$currentTime]
+                                        );
+                                });
+                        });
+                });
+        });
+    }
+
+    /**
+     * SQL CASE expression used to aggregate recognized revenue in grouped queries.
+     * Uses positional bindings for: [today, today, currentTime].
+     */
+    private function recognizedRevenueCaseExpression(string $table = 'appointments'): string
+    {
+        $statusColumn = $this->qualifyColumn('status', $table);
+        $dateColumn = $this->qualifyColumn('date', $table);
+        $endTimeColumn = $this->qualifyColumn('end_time', $table);
+        $timeColumn = $this->qualifyColumn('time', $table);
+        $priceColumn = $this->qualifyColumn('total_price', $table);
+
+        return "CASE WHEN {$statusColumn} = 'completed'
+            OR ({$statusColumn} IN ('confirmed', 'in_progress')
+                AND ({$dateColumn} < ? OR ({$dateColumn} = ?
+                    AND CAST(COALESCE(NULLIF({$endTimeColumn}, ''), NULLIF({$timeColumn}, ''), '00:00') AS TIME) <= ?)))
+            THEN COALESCE({$priceColumn}, 0)
+            ELSE 0
+        END";
+    }
+
+    private function qualifyColumn(string $column, ?string $table = null): string
+    {
+        return $table ? "{$table}.{$column}" : $column;
     }
 
     /**
