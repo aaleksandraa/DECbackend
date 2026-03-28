@@ -11,8 +11,16 @@ return new class extends Migration
      */
     public function up(): void
     {
+        if (!Schema::hasTable('salons')) {
+            return;
+        }
+
         Schema::table('salons', function (Blueprint $table) {
-            $table->boolean('chatbot_enabled')->default(false)->after('email');
+            if (!Schema::hasColumn('salons', 'chatbot_enabled')) {
+                $table->boolean('chatbot_enabled')->default(false)->after('email');
+            } else {
+                echo "✓ Column salons.chatbot_enabled already exists - skipping add\n";
+            }
         });
     }
 
@@ -21,8 +29,14 @@ return new class extends Migration
      */
     public function down(): void
     {
+        if (!Schema::hasTable('salons')) {
+            return;
+        }
+
         Schema::table('salons', function (Blueprint $table) {
-            $table->dropColumn('chatbot_enabled');
+            if (Schema::hasColumn('salons', 'chatbot_enabled')) {
+                $table->dropColumn('chatbot_enabled');
+            }
         });
     }
 };
