@@ -314,16 +314,19 @@ class AuthController extends Controller
             'message' => 'Login successful',
         ]);
 
+        $isSecureRequest = $request->isSecure() || (bool) config('session.secure');
+        $sameSite = $isSecureRequest ? 'none' : 'lax';
+
         $response->cookie(
             'spa_auth',
             $accessToken,
             $tokenTtlMinutes,
             '/',
-            config('session.domain'),
-            (bool) config('session.secure'),
+            null, // host-only cookie (api domain) to avoid domain misconfiguration issues
+            $isSecureRequest,
             true,
             false,
-            config('session.same_site', 'lax')
+            $sameSite
         );
 
         return $response;
@@ -347,7 +350,7 @@ class AuthController extends Controller
         }
 
         $response = response()->json(['message' => 'Odjavljen']);
-        $response->withoutCookie('spa_auth', '/', config('session.domain'));
+        $response->withoutCookie('spa_auth', '/');
 
         return $response;
     }

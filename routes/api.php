@@ -6,6 +6,7 @@ use App\Http\Controllers\Api\Admin\HomepageCategoryController as AdminHomepageCa
 use App\Http\Middleware\InjectSanctumBearerFromCookie;
 use App\Http\Controllers\Api\AppointmentController;
 use App\Http\Controllers\Api\AuthController;
+use App\Http\Controllers\Api\AuthDebugController;
 use App\Http\Controllers\Api\CalendarFeedController;
 use App\Http\Controllers\Api\ChatbotController;
 use App\Http\Controllers\Api\ClientController;
@@ -58,6 +59,9 @@ Route::prefix('v1')->group(function () {
         ->middleware('throttle:6,1');
     Route::post('/reset-password', [AuthController::class, 'resetPassword'])
         ->middleware('throttle:6,1');
+
+    // Auth diagnostics endpoint (temporary production debugging)
+    Route::get('/auth/debug', [AuthDebugController::class, 'me'])->middleware('throttle:30,1');
 
     // =============================================
     // CHATBOT API
