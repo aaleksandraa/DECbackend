@@ -62,7 +62,7 @@ class AppointmentTest extends TestCase
             'service_id' => $this->service->id,
             'date' => $tomorrow,
             'time' => '10:00',
-            'guest_name' => 'Marko Marković',
+            'guest_name' => 'Marko Markovic',
             'guest_email' => 'marko@example.com',
             'guest_phone' => '061234567',
             'guest_address' => 'Sarajevo',
@@ -72,7 +72,7 @@ class AppointmentTest extends TestCase
         $this->assertDatabaseHas('appointments', [
             'salon_id' => $this->salon->id,
             'staff_id' => $this->staff->id,
-            'guest_name' => 'Marko Marković',
+            'client_name' => 'Marko Markovic',
         ]);
     }
 
@@ -110,7 +110,7 @@ class AppointmentTest extends TestCase
             'service_id' => $this->service->id,
             'date' => $tomorrow,
             'time' => '10:00',
-            'guest_name' => 'Marko Marković',
+            'guest_name' => 'Marko Markovic',
             'guest_phone' => 'invalid',
             'guest_address' => 'Sarajevo',
         ]);
@@ -186,7 +186,9 @@ class AppointmentTest extends TestCase
 
         // Create first appointment
         Appointment::factory()->create([
+            'salon_id' => $this->salon->id,
             'staff_id' => $this->staff->id,
+            'service_id' => $this->service->id,
             'date' => $tomorrow,
             'time' => '10:00',
             'end_time' => '11:00',

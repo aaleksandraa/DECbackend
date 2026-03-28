@@ -12,14 +12,26 @@ return new class extends Migration
      */
     public function up(): void
     {
-        Schema::table('users', function (Blueprint $table) {
-            $table->boolean('is_guest')->default(false)->after('role');
-            $table->string('created_via')->nullable()->after('is_guest')
-                ->comment('import, widget, admin, registration');
-        });
+        $hasIsGuest = Schema::hasColumn('users', 'is_guest');
+        $hasCreatedVia = Schema::hasColumn('users', 'created_via');
 
-        // Update existing users - PostgreSQL boolean syntax
-        DB::statement("UPDATE users SET is_guest = false WHERE is_guest IS NULL");
+        if (!$hasIsGuest || !$hasCreatedVia) {
+            Schema::table('users', function (Blueprint $table) use ($hasIsGuest, $hasCreatedVia) {
+                if (!$hasIsGuest) {
+                    $table->boolean('is_guest')->default(false)->after('role');
+                }
+
+                if (!$hasCreatedVia) {
+                    $table->string('created_via')->nullable()->after('is_guest')
+                        ->comment('import, widget, admin, registration');
+                }
+            });
+        }
+
+        if (Schema::hasColumn('users', 'is_guest')) {
+            // Update existing users - PostgreSQL boolean syntax
+            DB::statement("UPDATE users SET is_guest = false WHERE is_guest IS NULL");
+        }
     }
 
     /**
@@ -27,8 +39,21 @@ return new class extends Migration
      */
     public function down(): void
     {
-        Schema::table('users', function (Blueprint $table) {
-            $table->dropColumn(['is_guest', 'created_via']);
+        $hasIsGuest = Schema::hasColumn('users', 'is_guest');
+        $hasCreatedVia = Schema::hasColumn('users', 'created_via');
+
+        if (!$hasIsGuest && !$hasCreatedVia) {
+            return;
+        }
+
+        Schema::table('users', function (Blueprint $table) use ($hasIsGuest, $hasCreatedVia) {
+            if ($hasCreatedVia) {
+                $table->dropColumn('created_via');
+            }
+
+            if ($hasIsGuest) {
+                $table->dropColumn('is_guest');
+            }
         });
     }
 };

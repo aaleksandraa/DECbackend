@@ -56,6 +56,7 @@ return [
 
         // OAuth
         'oauth_redirect_uri' => env('META_OAUTH_REDIRECT_URI', null),
+        'verify_webhook_signature' => env('META_VERIFY_WEBHOOK_SIGNATURE', true),
 
         // Required scopes
         'required_scopes' => [

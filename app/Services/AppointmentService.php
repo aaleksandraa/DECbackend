@@ -22,7 +22,7 @@ class AppointmentService
     /**
      * Convert date to ISO format for database queries.
      */
-    private function toIsoDate(string $date): string
+    public function toIsoDate(string $date): string
     {
         // If already in ISO format, return as is
         if (preg_match('/^\d{4}-\d{2}-\d{2}$/', $date)) {

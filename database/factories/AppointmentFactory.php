@@ -29,7 +29,6 @@ class AppointmentFactory extends Factory
             'client_phone' => $this->faker->phoneNumber(),
             'date' => $date->format('Y-m-d'),
             'time' => $time,
-            'duration' => $this->faker->randomElement([30, 45, 60, 90]),
             'status' => 'confirmed',
             'notes' => $this->faker->paragraph(),
             'booking_source' => 'web',

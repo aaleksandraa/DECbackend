@@ -9,6 +9,7 @@ use Illuminate\Database\Eloquent\Relations\HasMany;
 use Illuminate\Database\Eloquent\Relations\HasOne;
 use Illuminate\Database\Eloquent\SoftDeletes;
 use Illuminate\Support\Str;
+use Carbon\Carbon;
 
 class Salon extends Model
 {
@@ -52,6 +53,7 @@ class Salon extends Model
         'show_service_gallery',
         'category_order',
         'email_notifications_enabled',
+        'chatbot_enabled',
     ];
 
     /**
@@ -71,6 +73,7 @@ class Salon extends Model
         'is_verified' => 'boolean',
         'auto_confirm' => 'boolean',
         'email_notifications_enabled' => 'boolean',
+        'chatbot_enabled' => 'boolean',
         'rating' => 'float',
         'review_count' => 'integer',
         'latitude' => 'float',
@@ -232,6 +235,49 @@ class Salon extends Model
     public function favoritedBy(): HasMany
     {
         return $this->hasMany(Favorite::class);
+    }
+
+    /**
+     * Get social integrations (Instagram/Facebook chatbot) for the salon.
+     */
+    public function socialIntegrations(): HasMany
+    {
+        return $this->hasMany(SocialIntegration::class);
+    }
+
+    /**
+     * Check whether salon is currently within configured business hours.
+     */
+    public function isWithinBusinessHours(?Carbon $dateTime = null): bool
+    {
+        $dateTime = $dateTime ?? now(config('app.timezone', 'Europe/Sarajevo'));
+        $dayOfWeek = strtolower($dateTime->format('l'));
+
+        if (!is_array($this->working_hours)) {
+            return false;
+        }
+
+        $dayHours = $this->working_hours[$dayOfWeek] ?? null;
+        if (!is_array($dayHours)) {
+            return false;
+        }
+
+        $isOpen = (bool) ($dayHours['is_open'] ?? $dayHours['is_working'] ?? false);
+        if (!$isOpen) {
+            return false;
+        }
+
+        $open = $dayHours['open'] ?? $dayHours['start'] ?? null;
+        $close = $dayHours['close'] ?? $dayHours['end'] ?? null;
+        if (!$open || !$close) {
+            return false;
+        }
+
+        $openTime = substr((string) $open, 0, 5);
+        $closeTime = substr((string) $close, 0, 5);
+        $currentTime = $dateTime->format('H:i');
+
+        return $currentTime >= $openTime && $currentTime <= $closeTime;
     }
 
     /**

@@ -7,13 +7,21 @@ use Illuminate\Support\Facades\Log;
 
 class OpenAIService
 {
-    private OpenAIClient $client;
+    private ?OpenAIClient $client = null;
     private array $config;
+    private bool $enabled = false;
 
     public function __construct()
     {
-        $this->client = \OpenAI::client(config('chatbot.openai.api_key'));
         $this->config = config('chatbot.openai');
+
+        $apiKey = config('chatbot.openai.api_key');
+        if (is_string($apiKey) && trim($apiKey) !== '') {
+            $this->client = \OpenAI::client($apiKey);
+            $this->enabled = true;
+        } else {
+            Log::warning('OpenAI API key is missing. Chatbot AI responses are disabled.');
+        }
     }
 
     /**
@@ -21,6 +29,16 @@ class OpenAIService
      */
     public function analyzeMessage(string $message, array $context): array
     {
+        if (!$this->enabled || !$this->client) {
+            return [
+                'intent' => 'general',
+                'confidence' => 0.4,
+                'entities' => [],
+                'next_action' => 'fallback',
+                'processing_time_ms' => 0,
+            ];
+        }
+
         $systemPrompt = $this->buildSystemPrompt($context);
         $userPrompt = $this->buildAnalysisPrompt($message, $context);
 
@@ -70,6 +88,10 @@ class OpenAIService
      */
     public function generateResponse(array $context, string $action, array $data = []): string
     {
+        if (!$this->enabled || !$this->client) {
+            return $this->getFallbackResponse($action);
+        }
+
         $systemPrompt = $this->buildResponseSystemPrompt($context);
         $userPrompt = $this->buildResponsePrompt($action, $data, $context);
 

@@ -11,6 +11,10 @@ return new class extends Migration
      */
     public function up(): void
     {
+        if (!Schema::hasTable('widget_analytics')) {
+            return;
+        }
+
         Schema::table('widget_analytics', function (Blueprint $table) {
             // Add widget_setting_id if it doesn't exist
             if (!Schema::hasColumn('widget_analytics', 'widget_setting_id')) {
@@ -30,6 +34,10 @@ return new class extends Migration
      */
     public function down(): void
     {
+        if (!Schema::hasTable('widget_analytics')) {
+            return;
+        }
+
         Schema::table('widget_analytics', function (Blueprint $table) {
             // Drop foreign key and column
             if (Schema::hasColumn('widget_analytics', 'widget_setting_id')) {

@@ -149,7 +149,9 @@ class AppointmentServiceTest extends TestCase
 
         // Create existing appointment
         Appointment::factory()->create([
+            'salon_id' => $this->salon->id,
             'staff_id' => $this->staff->id,
+            'service_id' => $this->service->id,
             'date' => $tomorrow,
             'time' => '10:00',
             'end_time' => '11:00',
@@ -176,7 +178,9 @@ class AppointmentServiceTest extends TestCase
 
         // Create existing appointment
         Appointment::factory()->create([
+            'salon_id' => $this->salon->id,
             'staff_id' => $this->staff->id,
+            'service_id' => $this->service->id,
             'date' => $tomorrow,
             'time' => '10:00',
             'end_time' => '11:00',
@@ -252,12 +256,21 @@ class AppointmentServiceTest extends TestCase
      */
     public function test_available_slots_exclude_past_times_for_today(): void
     {
-        $today = now()->format('Y-m-d');
-        $slots = $this->appointmentService->getAvailableSlots($this->staff, $today, 60);
+        Carbon::setTestNow(Carbon::parse('2026-03-18 09:15:00'));
 
-        $now = now()->format('H:i');
-        foreach ($slots as $slot) {
-            $this->assertGreaterThan($now, $slot);
+        try {
+            $today = now()->format('Y-m-d');
+            $slots = $this->appointmentService->getAvailableSlots($this->staff, $today, 60);
+
+            $this->assertIsArray($slots);
+            $this->assertNotEmpty($slots);
+
+            $now = now()->format('H:i');
+            foreach ($slots as $slot) {
+                $this->assertGreaterThan($now, $slot);
+            }
+        } finally {
+            Carbon::setTestNow();
         }
     }
 

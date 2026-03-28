@@ -130,7 +130,7 @@
                                                     </a>
                                                 </td>
                                                 <td style="padding: 0 6px;">
-                                                    <a href="https://outlook.live.com/calendar/0/deeplink/compose?subject={{ urlencode('Termin: ' . $appointment->service->name . ' - ' . $appointment->salon->name) }}&location={{ urlencode($appointment->salon->address . ', ' . $appointment->salon->city) }}&body={{ urlencode('Rezervisano preko frizerino.com') }}&startdt={{ \Carbon\Carbon::parse($appointment->date)->format('Y-m-d') }}T{{ $appointment->time }}:00&enddt={{ \Carbon\Carbon::parse($appointment->date)->format('Y-m-d') }}T{{ $endTime }}:00" target="_blank" style="display: inline-block; background-color: #0078d4; color: #ffffff; text-decoration: none; padding: 10px 16px; border-radius: 6px; font-size: 13px; font-weight: 500;">
+                                                    <a href="{{ $outlookCalendarUrl }}" target="_blank" style="display: inline-block; background-color: #0078d4; color: #ffffff; text-decoration: none; padding: 10px 16px; border-radius: 6px; font-size: 13px; font-weight: 500;">
                                                         Outlook
                                                     </a>
                                                 </td>

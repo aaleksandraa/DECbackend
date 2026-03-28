@@ -15,8 +15,11 @@ class AppointmentConfirmationMail extends Mailable implements ShouldQueue
 {
     use Queueable, SerializesModels;
 
+    private const BOOKING_TIMEZONE = 'Europe/Sarajevo';
+
     public Appointment $appointment;
     public string $googleCalendarUrl;
+    public string $outlookCalendarUrl;
     public string $icsContent;
     public string $formattedDate;
     public string $formattedTime;
@@ -42,7 +45,11 @@ class AppointmentConfirmationMail extends Mailable implements ShouldQueue
         $dateString = $appointment->date instanceof Carbon
             ? $appointment->date->format('Y-m-d')
             : $appointment->date;
-        $startDateTime = Carbon::parse($dateString . ' ' . $appointment->time);
+        $startTime = substr((string) $appointment->time, 0, 5);
+        $startDateTime = Carbon::createFromFormat('Y-m-d H:i', $dateString . ' ' . $startTime, self::BOOKING_TIMEZONE);
+        if ($startDateTime === false) {
+            $startDateTime = Carbon::parse($dateString . ' ' . $startTime, self::BOOKING_TIMEZONE);
+        }
         $endDateTime = $startDateTime->copy()->addMinutes($this->totalDuration);
 
         $this->formattedDate = $startDateTime->locale('bs')->isoFormat('dddd, D. MMMM YYYY.');
@@ -51,45 +58,46 @@ class AppointmentConfirmationMail extends Mailable implements ShouldQueue
 
         // Generate Google Calendar URL
         $this->googleCalendarUrl = $this->generateGoogleCalendarUrl($startDateTime, $endDateTime);
+        $this->outlookCalendarUrl = $this->generateOutlookCalendarUrl($startDateTime, $endDateTime);
 
         // Generate ICS content for iOS/Outlook
         $this->icsContent = $this->generateIcsContent($startDateTime, $endDateTime);
-    }    /**
+    }
+
+    /**
      * Generate Google Calendar URL
      */
     private function generateGoogleCalendarUrl(Carbon $start, Carbon $end): string
     {
-        $salon = $this->appointment->salon;
-        $staff = $this->appointment->staff;
-
-        // Build service list
-        $services = $this->appointment->services();
-        if ($services->count() > 1) {
-            $serviceNames = $services->pluck('name')->toArray();
-            $serviceList = implode(', ', $serviceNames);
-            $title = urlencode("Termin: {$serviceList} - {$salon->name}");
-            $details = urlencode("Usluge: {$serviceList}\nSalon: {$salon->name}" .
-                ($staff ? "\nFrizer: {$staff->name}" : "") .
-                "\n\nRezervisano preko frizerino.com");
-        } else {
-            $service = $this->appointment->service;
-            $title = urlencode("Termin: {$service->name} - {$salon->name}");
-            $details = urlencode("Usluga: {$service->name}\nSalon: {$salon->name}" .
-                ($staff ? "\nFrizer: {$staff->name}" : "") .
-                "\n\nRezervisano preko frizerino.com");
-        }
-
-        $location = urlencode($salon->address . ', ' . $salon->city);
-
-        $startFormatted = $start->format('Ymd\THis');
-        $endFormatted = $end->format('Ymd\THis');
+        [$title, $details] = $this->buildCalendarTexts();
+        $location = $this->buildCalendarLocation();
+        $startFormatted = $start->copy()->utc()->format('Ymd\THis\Z');
+        $endFormatted = $end->copy()->utc()->format('Ymd\THis\Z');
+        $timezone = urlencode(self::BOOKING_TIMEZONE);
 
         return "https://calendar.google.com/calendar/render?action=TEMPLATE" .
-            "&text={$title}" .
+            "&text=" . urlencode($title) .
             "&dates={$startFormatted}/{$endFormatted}" .
-            "&details={$details}" .
-            "&location={$location}" .
+            "&details=" . urlencode($details) .
+            "&location=" . urlencode($location) .
+            "&ctz={$timezone}" .
             "&sf=true&output=xml";
+    }
+
+    /**
+     * Generate Outlook Calendar URL.
+     */
+    private function generateOutlookCalendarUrl(Carbon $start, Carbon $end): string
+    {
+        [$title, $details] = $this->buildCalendarTexts();
+        $location = $this->buildCalendarLocation();
+
+        return "https://outlook.live.com/calendar/0/deeplink/compose" .
+            "?subject=" . urlencode($title) .
+            "&location=" . urlencode($location) .
+            "&body=" . urlencode($details) .
+            "&startdt=" . urlencode($start->format('Y-m-d\TH:i:s')) .
+            "&enddt=" . urlencode($end->format('Y-m-d\TH:i:s'));
     }
 
     /**
@@ -97,49 +105,89 @@ class AppointmentConfirmationMail extends Mailable implements ShouldQueue
      */
     private function generateIcsContent(Carbon $start, Carbon $end): string
     {
-        $salon = $this->appointment->salon;
-        $staff = $this->appointment->staff;
+        [$summary, $description] = $this->buildCalendarTexts();
 
-        // Build service list
-        $services = $this->appointment->services();
-        if ($services->count() > 1) {
-            $serviceNames = $services->pluck('name')->toArray();
-            $serviceList = implode(', ', $serviceNames);
-            $summary = "Termin: {$serviceList} - {$salon->name}";
-            $description = "Usluge: {$serviceList}\\nSalon: {$salon->name}" .
-                ($staff ? "\\nFrizer: {$staff->name}" : "") .
-                "\\n\\nRezervisano preko frizerino.com";
-        } else {
-            $service = $this->appointment->service;
-            $summary = "Termin: {$service->name} - {$salon->name}";
-            $description = "Usluga: {$service->name}\\nSalon: {$salon->name}" .
-                ($staff ? "\\nFrizer: {$staff->name}" : "") .
-                "\\n\\nRezervisano preko frizerino.com";
-        }
-
-        $uid = uniqid('frizerino-') . '@frizerino.com';
-        $now = Carbon::now()->format('Ymd\THis\Z');
+        $uid = $this->appointment->id
+            ? 'appointment-' . $this->appointment->id . '@frizerino.com'
+            : uniqid('frizerino-') . '@frizerino.com';
+        $now = Carbon::now('UTC')->format('Ymd\THis\Z');
         $startFormatted = $start->format('Ymd\THis');
         $endFormatted = $end->format('Ymd\THis');
+        $timezone = self::BOOKING_TIMEZONE;
 
-        $location = $salon->address . ', ' . $salon->city;
+        $location = $this->buildCalendarLocation();
 
         return "BEGIN:VCALENDAR\r\n" .
             "VERSION:2.0\r\n" .
             "PRODID:-//Frizerino//Appointment//BS\r\n" .
             "CALSCALE:GREGORIAN\r\n" .
             "METHOD:PUBLISH\r\n" .
+            "X-WR-TIMEZONE:{$timezone}\r\n" .
             "BEGIN:VEVENT\r\n" .
             "UID:{$uid}\r\n" .
             "DTSTAMP:{$now}\r\n" .
-            "DTSTART:{$startFormatted}\r\n" .
-            "DTEND:{$endFormatted}\r\n" .
-            "SUMMARY:{$summary}\r\n" .
-            "DESCRIPTION:{$description}\r\n" .
-            "LOCATION:{$location}\r\n" .
+            "DTSTART;TZID={$timezone}:{$startFormatted}\r\n" .
+            "DTEND;TZID={$timezone}:{$endFormatted}\r\n" .
+            "SUMMARY:" . $this->escapeIcsText($summary) . "\r\n" .
+            "DESCRIPTION:" . $this->escapeIcsText($description) . "\r\n" .
+            "LOCATION:" . $this->escapeIcsText($location) . "\r\n" .
             "STATUS:CONFIRMED\r\n" .
             "END:VEVENT\r\n" .
             "END:VCALENDAR";
+    }
+
+    /**
+     * Build shared title and description for all calendar links/attachments.
+     *
+     * @return array{0: string, 1: string}
+     */
+    private function buildCalendarTexts(): array
+    {
+        $salon = $this->appointment->salon;
+        $staff = $this->appointment->staff;
+        $services = $this->appointment->services();
+
+        if ($services->count() > 1) {
+            $serviceList = implode(', ', $services->pluck('name')->toArray());
+            $title = "Termin: {$serviceList} - {$salon->name}";
+            $details = "Usluge: {$serviceList}\nSalon: {$salon->name}";
+        } else {
+            $serviceName = $services->first()?->name ?? ($this->appointment->service?->name ?? 'Termin');
+            $title = "Termin: {$serviceName} - {$salon->name}";
+            $details = "Usluga: {$serviceName}\nSalon: {$salon->name}";
+        }
+
+        if ($staff) {
+            $details .= "\nFrizer: {$staff->name}";
+        }
+
+        $details .= "\n\nRezervisano preko frizerino.com";
+
+        return [$title, $details];
+    }
+
+    /**
+     * Build location string for calendar entries.
+     */
+    private function buildCalendarLocation(): string
+    {
+        return implode(', ', array_filter([
+            $this->appointment->salon->address,
+            $this->appointment->salon->city,
+        ]));
+    }
+
+    /**
+     * Escape ICS reserved characters.
+     */
+    private function escapeIcsText(string $text): string
+    {
+        $text = str_replace('\\', '\\\\', $text);
+        $text = str_replace(',', '\,', $text);
+        $text = str_replace(';', '\;', $text);
+        $text = str_replace("\r", '', $text);
+
+        return str_replace("\n", '\n', $text);
     }
 
     /**

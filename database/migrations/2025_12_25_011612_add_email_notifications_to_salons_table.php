@@ -11,6 +11,10 @@ return new class extends Migration
      */
     public function up(): void
     {
+        if (Schema::hasColumn('salons', 'email_notifications_enabled')) {
+            return;
+        }
+
         Schema::table('salons', function (Blueprint $table) {
             $table->boolean('email_notifications_enabled')->default(true)->after('status');
         });
@@ -21,6 +25,10 @@ return new class extends Migration
      */
     public function down(): void
     {
+        if (!Schema::hasColumn('salons', 'email_notifications_enabled')) {
+            return;
+        }
+
         Schema::table('salons', function (Blueprint $table) {
             $table->dropColumn('email_notifications_enabled');
         });

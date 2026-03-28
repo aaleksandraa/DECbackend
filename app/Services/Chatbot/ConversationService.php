@@ -35,10 +35,9 @@ class ConversationService
                 'salon_id' => $salon->id,
                 'salon_name' => $salon->name,
             ]);
-
             return [
                 'conversation_id' => null,
-                'response_text' => 'Hvala na poruci! Naš tim će vam se javiti uskoro. 😊',
+                'response_text' => 'Hvala na poruci! Nas tim ce vam se javiti uskoro.',
                 'requires_human' => true,
                 'action' => 'disabled',
                 'meta' => [
@@ -52,6 +51,67 @@ class ConversationService
 
         // 2. Store inbound message (quick write)
         $inboundMessage = $this->storeInboundMessage($conversation, $messageText, $metaPayload);
+        $conversation->incrementMessageCount();
+
+        // 2.5 Fast path: explicit confirmation while already in confirming state.
+        // Booking creation should happen here and not via AI state transitions.
+        if (
+            $conversation->state === ChatbotConversation::STATE_CONFIRMING
+            && !$conversation->appointment_id
+            && $this->isConfirmationMessage($messageText)
+        ) {
+            try {
+                $bookingResult = $this->createBooking($conversation);
+                $responseText = 'Termin je uspjesno zakazan! Vidimo se '
+                    . $conversation->getContextValue('date')
+                    . ' u '
+                    . $conversation->getContextValue('time')
+                    . '. Hvala!';
+
+                $this->storeOutboundMessage($conversation, $responseText, 'booking_success');
+                $conversation->incrementMessageCount();
+                $conversation->update(['last_bot_response_at' => now()]);
+                $conversation->refresh();
+
+                return [
+                    'conversation_id' => $conversation->id,
+                    'response_text' => $responseText,
+                    'action' => 'booking_success',
+                    'requires_human' => $conversation->requires_human,
+                    'booking_created' => $bookingResult !== null,
+                    'meta' => [
+                        'intent' => ChatbotConversation::INTENT_BOOKING,
+                        'confidence' => 1.0,
+                        'state' => $conversation->state,
+                    ],
+                ];
+            } catch (\Exception $e) {
+                Log::error('Booking creation failed', [
+                    'conversation_id' => $conversation->id,
+                    'error' => $e->getMessage(),
+                ]);
+
+                $responseText = 'Doslo je do greske pri kreiranju termina. Molimo vas kontaktirajte nas direktno.';
+                $conversation->update(['requires_human' => true]);
+                $this->storeOutboundMessage($conversation, $responseText, 'booking_failed');
+                $conversation->incrementMessageCount();
+                $conversation->update(['last_bot_response_at' => now()]);
+                $conversation->refresh();
+
+                return [
+                    'conversation_id' => $conversation->id,
+                    'response_text' => $responseText,
+                    'action' => 'booking_failed',
+                    'requires_human' => true,
+                    'booking_created' => false,
+                    'meta' => [
+                        'intent' => ChatbotConversation::INTENT_BOOKING,
+                        'confidence' => 0.0,
+                        'state' => $conversation->state,
+                    ],
+                ];
+            }
+        }
 
         // 3. Build context for AI
         $context = $this->buildContext($conversation, $salon);
@@ -66,15 +126,13 @@ class ConversationService
         // 6. Check if human takeover is needed
         if ($this->shouldRequireHuman($analysis, $conversation, $messageText)) {
             $conversation->update(['requires_human' => true]);
-
             Log::info('Human takeover triggered', [
                 'conversation_id' => $conversation->id,
                 'reason' => 'low_confidence_or_explicit_request',
             ]);
-
             return [
                 'conversation_id' => $conversation->id,
-                'response_text' => 'Hvala na poruci! Naš tim će vam se javiti uskoro. 😊',
+                'response_text' => 'Hvala na poruci! Nas tim ce vam se javiti uskoro.',
                 'requires_human' => true,
                 'action' => 'human_takeover',
                 'meta' => [
@@ -89,7 +147,7 @@ class ConversationService
         $responseText = $this->openAI->generateResponse($context, $action, $actionData);
 
         // 8. Update database (FAST transaction for writes only)
-        DB::transaction(function() use ($conversation, $inboundMessage, $analysis, $responseText, $action) {
+        DB::transaction(function () use ($conversation, $inboundMessage, $analysis, $responseText, $action) {
             // Update inbound message with AI analysis
             $inboundMessage->update([
                 'ai_processed' => true,
@@ -105,37 +163,19 @@ class ConversationService
             // Store outbound message
             $this->storeOutboundMessage($conversation, $responseText, $action);
 
-            // Update conversation metrics (count ACTUAL messages created)
-            $conversation->update(['last_message_at' => now()]);
+            // Update conversation metrics
+            $conversation->incrementMessageCount();
+            $conversation->update(['last_bot_response_at' => now()]);
         });
 
         // Refresh conversation to get updated state
         $conversation->refresh();
-
-        // 9. Check if we should create booking (AFTER confirmation)
-        $bookingResult = null;
-        if ($conversation->state === 'confirming' && $this->isConfirmationMessage($messageText)) {
-            try {
-                $bookingResult = $this->createBooking($conversation);
-                $responseText = "✅ Vaš termin je uspješno zakazan! Vidimo se " .
-                    $conversation->getContextValue('date') . " u " .
-                    $conversation->getContextValue('time') . ". Hvala!";
-            } catch (\Exception $e) {
-                Log::error('Booking creation failed', [
-                    'conversation_id' => $conversation->id,
-                    'error' => $e->getMessage(),
-                ]);
-                $responseText = "Žao mi je, došlo je do greške pri kreiranju termina. Molimo vas kontaktirajte nas direktno.";
-                $conversation->update(['requires_human' => true]);
-            }
-        }
-
         return [
             'conversation_id' => $conversation->id,
             'response_text' => $responseText,
             'action' => $action,
             'requires_human' => $conversation->requires_human,
-            'booking_created' => $bookingResult !== null,
+            'booking_created' => false,
             'meta' => [
                 'intent' => $analysis['intent'],
                 'confidence' => $analysis['confidence'],
@@ -146,7 +186,16 @@ class ConversationService
 
     private function getOrCreateConversation(Salon $salon, string $threadId, string $senderPsid, array $payload): ChatbotConversation
     {
-        $integration = $salon->socialIntegrations()->active()->first();
+        $integrationId = isset($payload['social_integration_id']) ? (int) $payload['social_integration_id'] : null;
+
+        if ($integrationId) {
+            $integration = $salon->socialIntegrations()
+                ->active()
+                ->where('id', $integrationId)
+                ->first();
+        } else {
+            $integration = $salon->socialIntegrations()->active()->first();
+        }
 
         if (!$integration) {
             throw new \Exception("No active social integration for salon {$salon->id}");
@@ -267,8 +316,7 @@ class ConversationService
             ['collecting_service', 'booking'] => isset($entities['service']) ? 'collecting_datetime' : 'collecting_service',
             ['collecting_datetime', 'booking'] => isset($entities['date']) ? 'collecting_contact' : 'collecting_datetime',
             ['collecting_contact', 'booking'] => 'confirming',
-            ['confirming', 'booking'] => 'booked',
-
+            
             [_, 'pricing'] => 'greeting', // Answer and return to greeting
             [_, 'hours'] => 'greeting',
             [_, 'location'] => 'greeting',

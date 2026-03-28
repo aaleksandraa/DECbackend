@@ -56,6 +56,8 @@ class Staff extends Model
         'booking_note',
         'auto_confirm',
         'display_order',
+        'calendar_feed_token',
+        'calendar_feed_token_generated_at',
     ];
 
     /**
@@ -76,6 +78,7 @@ class Staff extends Model
         'rating' => 'float',
         'review_count' => 'integer',
         'years_experience' => 'integer',
+        'calendar_feed_token_generated_at' => 'datetime',
     ];
 
     /**

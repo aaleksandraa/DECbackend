@@ -103,10 +103,10 @@ class AppointmentPolicy
      */
     public function cancel(User $user, Appointment $appointment): bool
     {
-        // Client can cancel their own appointments if they're not completed or cancelled
+        // Client can attempt to cancel only their own appointments.
+        // Status rules are enforced in controller/service to return proper 422 responses.
         if ($user->role === 'klijent') {
-            return $appointment->client_id === $user->id && 
-                   in_array($appointment->status, ['pending', 'confirmed']);
+            return $appointment->client_id === $user->id;
         }
 
         // Staff can cancel appointments assigned to them

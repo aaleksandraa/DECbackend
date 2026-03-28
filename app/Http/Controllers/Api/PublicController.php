@@ -535,7 +535,7 @@ class PublicController extends Controller
             // Guest information
             'guest_name' => 'required|string|max:255',
             'guest_email' => 'nullable|email|max:255',
-            'guest_phone' => 'required|string|max:20',
+            'guest_phone' => ['required', 'string', 'max:20', 'regex:/^[0-9+\-\(\)\s]{8,20}$/'],
             'guest_address' => 'nullable|string|max:500',
             // Optional: create account
             'create_account' => 'boolean',
@@ -544,6 +544,7 @@ class PublicController extends Controller
             'date.regex' => 'Datum mora biti u formatu DD.MM.YYYY',
             'guest_name.required' => 'Ime i prezime su obavezni',
             'guest_phone.required' => 'Broj telefona je obavezan',
+            'guest_phone.regex' => 'Broj telefona nije u ispravnom formatu',
         ]);
 
         if ($validator->fails()) {

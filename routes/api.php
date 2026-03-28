@@ -5,6 +5,7 @@ use App\Http\Controllers\Api\Admin\ImportController;
 use App\Http\Controllers\Api\Admin\HomepageCategoryController as AdminHomepageCategoryController;
 use App\Http\Controllers\Api\AppointmentController;
 use App\Http\Controllers\Api\AuthController;
+use App\Http\Controllers\Api\CalendarFeedController;
 use App\Http\Controllers\Api\ChatbotController;
 use App\Http\Controllers\Api\ClientController;
 use App\Http\Controllers\Api\DashboardController;
@@ -58,9 +59,14 @@ Route::prefix('v1')->group(function () {
         ->middleware('throttle:6,1');
 
     // =============================================
-    // CHATBOT API (for n8n)
+    // CHATBOT API
+    // - Direct Meta webhook (backend-first)
+    // - Legacy n8n endpoint (backward compatibility)
     // =============================================
     Route::prefix('chatbot')->group(function () {
+        Route::get('/webhook', [ChatbotController::class, 'verifyWebhook']);
+        Route::post('/webhook', [ChatbotController::class, 'handleWebhook'])
+            ->middleware('throttle:120,1');
         Route::post('/message', [ChatbotController::class, 'processMessage'])
             ->middleware('throttle:60,1');
     });
@@ -125,6 +131,7 @@ Route::prefix('v1')->group(function () {
 
             // Public ICS download (no auth required)
             Route::get('/appointments/{appointment}/ics', [AppointmentController::class, 'downloadIcs']);
+            Route::get('/calendar/staff/{token}.ics', [CalendarFeedController::class, 'staffFeed']);
 
             // Sitemap for SEO
             Route::get('/sitemap', [PublicController::class, 'sitemap']);
@@ -235,6 +242,8 @@ Route::prefix('v1')->group(function () {
 
         // Staff self-update route
         Route::put('/staff/me/settings', [StaffController::class, 'updateOwnSettings']);
+        Route::get('/staff/me/calendar-links', [CalendarFeedController::class, 'myLinks']);
+        Route::post('/staff/me/calendar-links/regenerate', [CalendarFeedController::class, 'regenerate']);
 
         // Service routes - reorder must come BEFORE {service} parameter routes
         Route::post('/salons/{salon}/services', [ServiceController::class, 'store']);
@@ -320,6 +329,8 @@ Route::prefix('v1')->group(function () {
             Route::get('/', [\App\Http\Controllers\Api\Admin\SocialIntegrationController::class, 'index']);
             Route::get('/connect', [\App\Http\Controllers\Api\Admin\SocialIntegrationController::class, 'connect']);
             Route::get('/callback', [\App\Http\Controllers\Api\Admin\SocialIntegrationController::class, 'callback']);
+            Route::get('/pending-pages', [\App\Http\Controllers\Api\Admin\SocialIntegrationController::class, 'pendingPages']);
+            Route::post('/select-page', [\App\Http\Controllers\Api\Admin\SocialIntegrationController::class, 'selectPage']);
             Route::patch('/{id}', [\App\Http\Controllers\Api\Admin\SocialIntegrationController::class, 'update']);
             Route::post('/disconnect', [\App\Http\Controllers\Api\Admin\SocialIntegrationController::class, 'disconnect']);
         });
@@ -348,6 +359,7 @@ Route::prefix('v1')->group(function () {
             Route::put('/salons/{salon}/approve', [AdminController::class, 'approveSalon']);
             Route::put('/salons/{salon}/suspend', [AdminController::class, 'suspendSalon']);
             Route::get('/analytics', [AdminController::class, 'analytics']);
+            Route::get('/social-integrations/health', [\App\Http\Controllers\Api\Admin\SocialIntegrationController::class, 'healthCheck']);
 
             // GDPR Consents management
             Route::get('/consents', [AdminController::class, 'consents']);
