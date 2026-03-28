@@ -42,10 +42,11 @@ return [
                 return [];
             }
 
+            $baseHost = preg_replace('/^www\./i', '', $host) ?: $host;
+
             return array_values(array_unique(array_filter([
-                "{$scheme}://{$host}",
-                "{$scheme}://www.".ltrim($host, 'www.'),
-                "{$scheme}://".ltrim($host, 'www.'),
+                "{$scheme}://{$baseHost}",
+                "{$scheme}://www.{$baseHost}",
             ])));
         })(),
         array_map('trim', explode(',', (string) env('CORS_ALLOWED_ORIGINS', '')))

@@ -23,7 +23,16 @@ return [
             '::1',
             env('APP_URL') ? parse_url(env('APP_URL'), PHP_URL_HOST) : null,
             env('FRONTEND_URL') ? parse_url(env('FRONTEND_URL'), PHP_URL_HOST) : null,
-            env('FRONTEND_URL') ? 'www.'.ltrim((string) parse_url(env('FRONTEND_URL'), PHP_URL_HOST), 'www.') : null,
+            env('FRONTEND_URL') ? (function () {
+                $host = parse_url((string) env('FRONTEND_URL'), PHP_URL_HOST);
+                if (!$host) {
+                    return null;
+                }
+
+                $baseHost = preg_replace('/^www\./i', '', (string) $host) ?: (string) $host;
+
+                return 'www.'.$baseHost;
+            })() : null,
         ]))
     )))))),
 
