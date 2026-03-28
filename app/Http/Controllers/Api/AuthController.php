@@ -312,6 +312,9 @@ class AuthController extends Controller
         $response = response()->json([
             'user' => $user,
             'message' => 'Login successful',
+            // Runtime fallback for SPA (kept in memory on frontend, not persisted in localStorage).
+            'access_token' => $accessToken,
+            'token_type' => 'Bearer',
         ]);
 
         $isSecureRequest = $request->isSecure() || (bool) config('session.secure');

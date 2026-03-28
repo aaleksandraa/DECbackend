@@ -24,7 +24,16 @@ class AuthDebugController extends Controller
             'session_id_present' => $request->hasSession() ? (string) $request->session()->getId() !== '' : false,
             'host' => $request->getHost(),
             'secure' => $request->isSecure(),
+            'configured' => [
+                'app_url' => config('app.url'),
+                'frontend_url' => config('app.frontend_url'),
+                'session_domain' => config('session.domain'),
+                'session_secure' => config('session.secure'),
+                'session_same_site' => config('session.same_site'),
+                'sanctum_stateful' => config('sanctum.stateful'),
+                'cors_allowed_origins' => config('cors.allowed_origins'),
+                'session_cookie_name' => config('session.cookie'),
+            ],
         ]);
     }
 }
-

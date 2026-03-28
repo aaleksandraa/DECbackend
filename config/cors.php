@@ -22,14 +22,34 @@ return [
     // IMPORTANT: When supports_credentials is true, cannot use '*'
     // Must specify exact origins for authenticated routes
     // Widget routes use pattern matching below
-    'allowed_origins' => [
-        'http://localhost:3000',
-        'http://localhost:5173',
-        'http://localhost:5174',
-        'http://localhost:5175',
-        'https://frizerino.com',
-        'https://www.frizerino.com',
-    ],
+    'allowed_origins' => array_values(array_unique(array_filter(array_merge(
+        [
+            'http://localhost:3000',
+            'http://localhost:5173',
+            'http://localhost:5174',
+            'http://localhost:5175',
+        ],
+        (function () {
+            $frontendUrl = env('FRONTEND_URL');
+            if (!$frontendUrl) {
+                return [];
+            }
+
+            $host = parse_url($frontendUrl, PHP_URL_HOST);
+            $scheme = parse_url($frontendUrl, PHP_URL_SCHEME) ?: 'https';
+
+            if (!$host) {
+                return [];
+            }
+
+            return array_values(array_unique(array_filter([
+                "{$scheme}://{$host}",
+                "{$scheme}://www.".ltrim($host, 'www.'),
+                "{$scheme}://".ltrim($host, 'www.'),
+            ])));
+        })(),
+        array_map('trim', explode(',', (string) env('CORS_ALLOWED_ORIGINS', '')))
+    )))),
 
     // Widget routes handle CORS separately via App\Http\Middleware\WidgetCors.
     // Keep global API CORS strict for cookie/session authentication.
