@@ -3,6 +3,7 @@
 use Illuminate\Database\Migrations\Migration;
 use Illuminate\Database\Schema\Blueprint;
 use Illuminate\Support\Facades\Schema;
+use Illuminate\Support\Facades\DB;
 
 return new class extends Migration
 {
@@ -11,6 +12,12 @@ return new class extends Migration
      */
     public function up(): void
     {
+        if (Schema::hasTable('import_batches')) {
+            // Production-safe: table already exists, do not recreate or alter destructively.
+            echo "✓ Table import_batches already exists - skipping create\n";
+            return;
+        }
+
         Schema::create('import_batches', function (Blueprint $table) {
             $table->id();
             $table->foreignId('salon_id')->constrained()->onDelete('cascade');
@@ -33,6 +40,12 @@ return new class extends Migration
             $table->index(['salon_id', 'status']);
             $table->index('created_at');
         });
+
+        if (DB::getDriverName() === 'pgsql') {
+            // Defensive index creation (idempotent on PostgreSQL).
+            DB::statement('CREATE INDEX IF NOT EXISTS import_batches_salon_id_status_index ON import_batches (salon_id, status)');
+            DB::statement('CREATE INDEX IF NOT EXISTS import_batches_created_at_index ON import_batches (created_at)');
+        }
     }
 
     /**
@@ -40,6 +53,17 @@ return new class extends Migration
      */
     public function down(): void
     {
-        Schema::dropIfExists('import_batches');
+        if (!Schema::hasTable('import_batches')) {
+            return;
+        }
+
+        // Production-safe rollback: avoid dropping existing import history.
+        $hasData = DB::table('import_batches')->exists();
+        if ($hasData) {
+            echo "✓ Table import_batches contains data - skipping drop to preserve records\n";
+            return;
+        }
+
+        Schema::drop('import_batches');
     }
 };
