@@ -248,7 +248,7 @@ class AuthController extends Controller
     /**
      * Login a user.
      */
-    public function login(Request $request)
+    public function login(Request $request): JsonResponse
     {
         $request->validate([
             'email' => 'required|email',
@@ -302,21 +302,24 @@ class AuthController extends Controller
 
         return response()->json([
             'user' => $user,
-            'message' => 'Login successful'
+            'message' => 'Login successful',
         ]);
     }
 
     /**
      * Logout a user.
      */
-    public function logout(Request $request)
-{
-    Auth::guard('web')->logout();
-    $request->session()->invalidate();
-    $request->session()->regenerateToken();
+    public function logout(Request $request): JsonResponse
+    {
+        Auth::guard('web')->logout();
 
-    return response()->json(['message' => 'Odjavljen']);
-}
+        if ($request->hasSession()) {
+            $request->session()->invalidate();
+            $request->session()->regenerateToken();
+        }
+
+        return response()->json(['message' => 'Odjavljen']);
+    }
 
     /**
      * Get the authenticated user.

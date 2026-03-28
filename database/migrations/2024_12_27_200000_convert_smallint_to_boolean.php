@@ -97,12 +97,27 @@ return new class extends Migration
             return;
         }
 
-        DB::statement("ALTER TABLE {$table} ALTER COLUMN {$column} DROP DEFAULT");
-        DB::statement("ALTER TABLE {$table} ALTER COLUMN {$column} TYPE BOOLEAN USING ({$column}::integer::boolean)");
-        DB::statement("ALTER TABLE {$table} ALTER COLUMN {$column} SET DEFAULT " . ($default ? 'true' : 'false'));
+        $tableName = "\"{$table}\"";
+        $columnName = "\"{$column}\"";
+
+        DB::statement("ALTER TABLE {$tableName} ALTER COLUMN {$columnName} DROP DEFAULT");
+
+        if (DB::getDriverName() === 'pgsql') {
+            $this->dropPgCheckConstraints($table, $column);
+
+            // PostgreSQL-safe conversion that handles 0/1 and legacy textual truthy values.
+            DB::statement(
+                "ALTER TABLE {$tableName} ALTER COLUMN {$columnName} TYPE BOOLEAN " .
+                "USING (CASE WHEN {$columnName}::text IN ('1', 't', 'true', 'TRUE') THEN true ELSE false END)"
+            );
+        } else {
+            DB::statement("ALTER TABLE {$tableName} ALTER COLUMN {$columnName} TYPE BOOLEAN");
+        }
+
+        DB::statement("ALTER TABLE {$tableName} ALTER COLUMN {$columnName} SET DEFAULT " . ($default ? 'true' : 'false'));
 
         if ($setNotNull) {
-            DB::statement("ALTER TABLE {$table} ALTER COLUMN {$column} SET NOT NULL");
+            DB::statement("ALTER TABLE {$tableName} ALTER COLUMN {$columnName} SET NOT NULL");
         }
     }
 
@@ -113,5 +128,32 @@ return new class extends Migration
         }
 
         DB::statement("ALTER TABLE {$table} ALTER COLUMN {$column} TYPE SMALLINT USING {$column}::integer");
+    }
+
+    /**
+     * Drop PostgreSQL CHECK constraints bound to a specific column.
+     * Old SMALLINT boolean constraints like "column IN (0,1)" can block type conversion.
+     */
+    private function dropPgCheckConstraints(string $table, string $column): void
+    {
+        $constraints = DB::select(
+            "
+            SELECT DISTINCT c.conname
+            FROM pg_constraint c
+            JOIN pg_class t ON t.oid = c.conrelid
+            JOIN pg_namespace n ON n.oid = t.relnamespace
+            JOIN pg_attribute a ON a.attrelid = t.oid AND a.attnum = ANY(c.conkey)
+            WHERE c.contype = 'c'
+              AND t.relname = ?
+              AND a.attname = ?
+            ",
+            [$table, $column]
+        );
+
+        foreach ($constraints as $constraint) {
+            if (!empty($constraint->conname)) {
+                DB::statement("ALTER TABLE \"{$table}\" DROP CONSTRAINT IF EXISTS \"{$constraint->conname}\"");
+            }
+        }
     }
 };

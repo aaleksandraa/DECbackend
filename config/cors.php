@@ -31,10 +31,9 @@ return [
         'https://www.frizerino.com',
     ],
 
-    // Allow any origin for widget API routes (they use API key auth, not cookies)
-    'allowed_origins_patterns' => [
-        '#^https?://.*$#', // Allow all origins for widget routes
-    ],
+    // Widget routes handle CORS separately via App\Http\Middleware\WidgetCors.
+    // Keep global API CORS strict for cookie/session authentication.
+    'allowed_origins_patterns' => [],
 
     'allowed_headers' => ['*'],
 

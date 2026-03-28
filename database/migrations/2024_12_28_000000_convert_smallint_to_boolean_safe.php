@@ -16,8 +16,34 @@ return new class extends Migration
      */
     public function up(): void
     {
+        $dropPgCheckConstraints = function (string $table, string $column) {
+            if (DB::getDriverName() !== 'pgsql') {
+                return;
+            }
+
+            $constraints = DB::select(
+                "
+                SELECT DISTINCT c.conname
+                FROM pg_constraint c
+                JOIN pg_class t ON t.oid = c.conrelid
+                JOIN pg_namespace n ON n.oid = t.relnamespace
+                JOIN pg_attribute a ON a.attrelid = t.oid AND a.attnum = ANY(c.conkey)
+                WHERE c.contype = 'c'
+                  AND t.relname = ?
+                  AND a.attname = ?
+                ",
+                [$table, $column]
+            );
+
+            foreach ($constraints as $constraint) {
+                if (!empty($constraint->conname)) {
+                    DB::statement("ALTER TABLE \"{$table}\" DROP CONSTRAINT IF EXISTS \"{$constraint->conname}\"");
+                }
+            }
+        };
+
         // Helper function to safely convert a column
-        $convertColumn = function($table, $column, $defaultValue) {
+        $convertColumn = function($table, $column, $defaultValue) use ($dropPgCheckConstraints) {
             // Check if column exists
             $exists = DB::select("
                 SELECT column_name, data_type, column_default
@@ -50,14 +76,20 @@ return new class extends Migration
                 // Step 1: Drop DEFAULT if exists
                 DB::statement("ALTER TABLE {$table} ALTER COLUMN {$column} DROP DEFAULT");
 
-                // Step 2: Convert type (SMALLINT/INTEGER → BOOLEAN)
-                DB::statement("ALTER TABLE {$table} ALTER COLUMN {$column} TYPE BOOLEAN USING ({$column}::integer::boolean)");
+                // Step 2: Drop legacy SMALLINT CHECK constraints (e.g. column IN (0,1))
+                $dropPgCheckConstraints($table, $column);
 
-                // Step 3: Set new DEFAULT
+                // Step 3: Convert type (SMALLINT/INTEGER → BOOLEAN) using PostgreSQL-safe CASE mapping
+                DB::statement(
+                    "ALTER TABLE {$table} ALTER COLUMN {$column} TYPE BOOLEAN " .
+                    "USING (CASE WHEN {$column}::text IN ('1', 't', 'true', 'TRUE') THEN true ELSE false END)"
+                );
+
+                // Step 4: Set new DEFAULT
                 $defaultStr = $defaultValue ? 'true' : 'false';
                 DB::statement("ALTER TABLE {$table} ALTER COLUMN {$column} SET DEFAULT {$defaultStr}");
 
-                // Step 4: Set NOT NULL if appropriate
+                // Step 5: Set NOT NULL if appropriate
                 if ($defaultValue !== null) {
                     DB::statement("ALTER TABLE {$table} ALTER COLUMN {$column} SET NOT NULL");
                 }

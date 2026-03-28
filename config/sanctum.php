@@ -13,11 +13,19 @@ return [
     |
     */
 
-    'stateful' => explode(',', env('SANCTUM_STATEFUL_DOMAINS', sprintf(
-        '%s%s',
-        'localhost,localhost:3000,127.0.0.1,127.0.0.1:8000,::1',
-        env('APP_URL') ? ','.parse_url(env('APP_URL'), PHP_URL_HOST) : ''
-    ))),
+    'stateful' => array_values(array_unique(array_filter(array_map('trim', explode(',', env(
+        'SANCTUM_STATEFUL_DOMAINS',
+        implode(',', array_filter([
+            'localhost',
+            'localhost:3000',
+            '127.0.0.1',
+            '127.0.0.1:8000',
+            '::1',
+            env('APP_URL') ? parse_url(env('APP_URL'), PHP_URL_HOST) : null,
+            env('FRONTEND_URL') ? parse_url(env('FRONTEND_URL'), PHP_URL_HOST) : null,
+            env('FRONTEND_URL') ? 'www.'.ltrim((string) parse_url(env('FRONTEND_URL'), PHP_URL_HOST), 'www.') : null,
+        ]))
+    )))))),
 
     /*
     |--------------------------------------------------------------------------
