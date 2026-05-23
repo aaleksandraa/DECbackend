@@ -29,7 +29,8 @@ class SendAppointmentReminder implements ShouldQueue
      * Create a new job instance.
      */
     public function __construct(
-        public Appointment $appointment
+        public Appointment $appointment,
+        public string $reminderType = 'day_before'
     ) {}
 
     /**
@@ -38,6 +39,10 @@ class SendAppointmentReminder implements ShouldQueue
     public function handle(NotificationService $notificationService): void
     {
         try {
+            if (!in_array($this->reminderType, ['day_before', 'same_day'], true)) {
+                $this->reminderType = 'day_before';
+            }
+
             // Load relationships
             $this->appointment->load(['salon', 'service', 'staff', 'client']);
 
@@ -61,7 +66,7 @@ class SendAppointmentReminder implements ShouldQueue
             // Send email reminder if we have an email address
             if ($emailAddress) {
                 \Illuminate\Support\Facades\Mail::to($emailAddress)
-                    ->send(new \App\Mail\AppointmentReminderMail($this->appointment));
+                    ->send(new \App\Mail\AppointmentReminderMail($this->appointment, $this->reminderType));
 
                 Log::info('Appointment reminder email sent', [
                     'appointment_id' => $this->appointment->id,
@@ -69,12 +74,14 @@ class SendAppointmentReminder implements ShouldQueue
                     'client_email' => $emailAddress,
                     'is_guest' => !$this->appointment->client_id,
                     'client_name' => $clientName,
+                    'reminder_type' => $this->reminderType,
                 ]);
             } else {
                 Log::warning('Appointment reminder email not sent - no email address', [
                     'appointment_id' => $this->appointment->id,
                     'client_id' => $this->appointment->client_id,
                     'is_guest' => !$this->appointment->client_id,
+                    'reminder_type' => $this->reminderType,
                 ]);
             }
 
@@ -83,10 +90,12 @@ class SendAppointmentReminder implements ShouldQueue
                 'client_id' => $this->appointment->client_id,
                 'has_email' => !empty($emailAddress),
                 'is_guest' => !$this->appointment->client_id,
+                'reminder_type' => $this->reminderType,
             ]);
         } catch (\Exception $e) {
             Log::error('Failed to send appointment reminder', [
                 'appointment_id' => $this->appointment->id,
+                'reminder_type' => $this->reminderType,
                 'error' => $e->getMessage(),
                 'trace' => $e->getTraceAsString(),
             ]);
@@ -102,6 +111,7 @@ class SendAppointmentReminder implements ShouldQueue
     {
         Log::error('Appointment reminder job failed permanently', [
             'appointment_id' => $this->appointment->id,
+            'reminder_type' => $this->reminderType,
             'error' => $exception->getMessage(),
         ]);
     }

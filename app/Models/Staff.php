@@ -2,6 +2,7 @@
 
 namespace App\Models;
 
+use App\Support\SitemapCache;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
@@ -180,6 +181,18 @@ class Staff extends Model
                     $count++;
                 }
             }
+        });
+
+        static::saved(function () {
+            SitemapCache::clearAll();
+        });
+
+        static::deleted(function () {
+            SitemapCache::clearAll();
+        });
+
+        static::restored(function () {
+            SitemapCache::clearAll();
         });
     }
 

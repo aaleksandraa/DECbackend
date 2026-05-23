@@ -2,6 +2,7 @@
 
 namespace App\Models;
 
+use App\Support\SitemapCache;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
@@ -106,6 +107,18 @@ class Salon extends Model
             if ($salon->isDirty('city')) {
                 $salon->city_slug = Str::slug($salon->city);
             }
+        });
+
+        static::saved(function () {
+            SitemapCache::clearAll();
+        });
+
+        static::deleted(function () {
+            SitemapCache::clearAll();
+        });
+
+        static::restored(function () {
+            SitemapCache::clearAll();
         });
     }
 

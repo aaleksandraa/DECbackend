@@ -2,8 +2,8 @@
 
 namespace App\Console\Commands;
 
+use App\Support\SitemapCache;
 use Illuminate\Console\Command;
-use Illuminate\Support\Facades\Cache;
 
 class ClearSitemapCache extends Command
 {
@@ -26,12 +26,7 @@ class ClearSitemapCache extends Command
      */
     public function handle(): int
     {
-        Cache::forget('sitemap_index');
-        Cache::forget('sitemap_static');
-        Cache::forget('sitemap_cities');
-        Cache::forget('sitemap_salons');
-        Cache::forget('sitemap_staff');
-        Cache::forget('sitemap_services');
+        SitemapCache::clearAll();
 
         $this->info('Sitemap cache cleared successfully!');
 

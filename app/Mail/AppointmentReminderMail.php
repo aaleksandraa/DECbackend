@@ -3,19 +3,20 @@
 namespace App\Mail;
 
 use App\Models\Appointment;
+use Carbon\Carbon;
 use Illuminate\Bus\Queueable;
 use Illuminate\Contracts\Queue\ShouldQueue;
 use Illuminate\Mail\Mailable;
 use Illuminate\Mail\Mailables\Content;
 use Illuminate\Mail\Mailables\Envelope;
 use Illuminate\Queue\SerializesModels;
-use Carbon\Carbon;
 
 class AppointmentReminderMail extends Mailable implements ShouldQueue
 {
     use Queueable, SerializesModels;
 
     public Appointment $appointment;
+    public string $reminderType;
     public string $formattedDate;
     public string $formattedTime;
     public string $endTime;
@@ -24,15 +25,18 @@ class AppointmentReminderMail extends Mailable implements ShouldQueue
     /**
      * Create a new message instance.
      */
-    public function __construct(Appointment $appointment)
+    public function __construct(Appointment $appointment, string $reminderType = 'day_before')
     {
         $this->appointment = $appointment->load(['salon', 'service', 'staff', 'client']);
+        $this->reminderType = in_array($reminderType, ['day_before', 'same_day'], true)
+            ? $reminderType
+            : 'day_before';
 
         // Parse date and time
         $dateString = $appointment->date instanceof Carbon
             ? $appointment->date->format('Y-m-d')
             : $appointment->date;
-        $startDateTime = Carbon::parse($dateString . ' ' . $appointment->time);
+        $startDateTime = Carbon::parse($dateString.' '.$appointment->time, 'Europe/Sarajevo');
         $duration = $appointment->service->duration ?? 60;
         $endDateTime = $startDateTime->copy()->addMinutes($duration);
 
@@ -40,10 +44,9 @@ class AppointmentReminderMail extends Mailable implements ShouldQueue
         $this->formattedTime = $startDateTime->format('H:i');
         $this->endTime = $endDateTime->format('H:i');
 
-        // Calculate hours until appointment
-        $now = Carbon::now();
-        $hoursUntil = $now->diffInHours($startDateTime);
-        $this->hoursUntil = $hoursUntil > 24 ? 'sutra' : "za {$hoursUntil} sati";
+        // Calculate dynamic reminder label based on reminder type.
+        $now = Carbon::now('Europe/Sarajevo');
+        $this->hoursUntil = $this->buildReminderLabel($startDateTime, $now);
     }
 
     /**
@@ -55,12 +58,12 @@ class AppointmentReminderMail extends Mailable implements ShouldQueue
 
         // Use salon's email for Reply-To if available
         $replyToEmail = $salon->email ?: 'info@frizerino.com';
-        $replyToName = $salon->email ? $salon->name : 'Frizerino Podrška';
+        $replyToName = $salon->email ? $salon->name : 'Frizerino Podrska';
 
         return new Envelope(
             from: new \Illuminate\Mail\Mailables\Address('info@frizerino.com', 'Frizerino'),
             replyTo: [new \Illuminate\Mail\Mailables\Address($replyToEmail, $replyToName)],
-            subject: 'Podsjetnik: Vaš termin ' . $this->hoursUntil,
+            subject: 'Podsjetnik: Vas termin '.$this->hoursUntil,
         );
     }
 
@@ -80,5 +83,26 @@ class AppointmentReminderMail extends Mailable implements ShouldQueue
     public function attachments(): array
     {
         return [];
+    }
+
+    private function buildReminderLabel(Carbon $startDateTime, Carbon $now): string
+    {
+        if ($this->reminderType === 'day_before') {
+            return 'sutra';
+        }
+
+        $minutesUntil = $now->diffInMinutes($startDateTime, false);
+
+        if ($minutesUntil <= 0) {
+            return 'danas';
+        }
+
+        if ($minutesUntil < 60) {
+            return 'za '.$minutesUntil.' min';
+        }
+
+        $hoursUntil = (int) ceil($minutesUntil / 60);
+
+        return $hoursUntil === 1 ? 'za 1 sat' : 'za '.$hoursUntil.' sati';
     }
 }

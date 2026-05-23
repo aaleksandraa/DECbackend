@@ -2,6 +2,7 @@
 
 namespace App\Models;
 
+use App\Support\SitemapCache;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Support\Str;
@@ -38,6 +39,14 @@ class Location extends Model
             if (empty($location->city_slug)) {
                 $location->city_slug = Str::slug($location->name);
             }
+        });
+
+        static::saved(function () {
+            SitemapCache::clearAll();
+        });
+
+        static::deleted(function () {
+            SitemapCache::clearAll();
         });
     }
 

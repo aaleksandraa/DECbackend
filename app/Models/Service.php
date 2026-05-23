@@ -2,6 +2,7 @@
 
 namespace App\Models;
 
+use App\Support\SitemapCache;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
@@ -12,6 +13,21 @@ use Illuminate\Database\Eloquent\SoftDeletes;
 class Service extends Model
 {
     use HasFactory, SoftDeletes;
+
+    protected static function booted(): void
+    {
+        static::saved(function () {
+            SitemapCache::clearAll();
+        });
+
+        static::deleted(function () {
+            SitemapCache::clearAll();
+        });
+
+        static::restored(function () {
+            SitemapCache::clearAll();
+        });
+    }
 
     /**
      * The attributes that are mass assignable.

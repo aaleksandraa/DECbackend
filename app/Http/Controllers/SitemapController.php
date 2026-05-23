@@ -6,6 +6,7 @@ use App\Models\Location;
 use App\Models\Salon;
 use App\Models\Service;
 use App\Models\Staff;
+use App\Support\SitemapCache;
 use Carbon\Carbon;
 use Illuminate\Http\Response;
 use Illuminate\Support\Facades\Cache;
@@ -211,7 +212,7 @@ class SitemapController extends Controller
 
             $staffMembers = Staff::whereRaw('is_active = true')
                 ->with(['salon' => function ($query) {
-                    $query->where('status', 'active')->select('id', 'slug', 'name');
+                    $query->where('status', 'approved')->select('id', 'slug', 'name');
                 }])
                 ->select('id', 'name', 'salon_id', 'role', 'rating', 'review_count', 'updated_at')
                 ->get();
@@ -312,7 +313,7 @@ class SitemapController extends Controller
             ];
 
             // Get all cities for service + city combinations
-            $cities = Salon::where('status', 'active')
+            $cities = Salon::where('status', 'approved')
                 ->whereNotNull('city_slug')
                 ->select('city', 'city_slug')
                 ->distinct()
@@ -402,12 +403,7 @@ class SitemapController extends Controller
      */
     public function clearCache(): Response
     {
-        Cache::forget('sitemap_index');
-        Cache::forget('sitemap_static');
-        Cache::forget('sitemap_cities');
-        Cache::forget('sitemap_salons');
-        Cache::forget('sitemap_staff');
-        Cache::forget('sitemap_services');
+        SitemapCache::clearAll();
 
         return response()->json(['message' => 'Sitemap cache cleared']);
     }
