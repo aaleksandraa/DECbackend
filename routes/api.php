@@ -268,6 +268,7 @@ Route::prefix('v1')->group(function () {
         Route::get('/appointments', [AppointmentController::class, 'index']);
         Route::post('/appointments', [AppointmentController::class, 'store']);
         Route::get('/appointments/capacity/month', [AppointmentController::class, 'getMonthCapacity']);
+        Route::get('/appointments/calendar-version', [AppointmentController::class, 'calendarVersion']);
         Route::get('/appointments/{appointment}', [AppointmentController::class, 'show']);
         Route::get('/appointments/{appointment}/ics', [AppointmentController::class, 'downloadIcs']);
         Route::put('/appointments/{appointment}', [AppointmentController::class, 'update']);
@@ -327,6 +328,7 @@ Route::prefix('v1')->group(function () {
 
         // Clients management for salon owners and staff
         Route::get('/clients', [ClientController::class, 'index']);
+        Route::get('/clients/export', [ClientController::class, 'export']);
         Route::post('/clients/send-email', [ClientController::class, 'sendEmail']);
         Route::get('/clients/{clientId}', [ClientController::class, 'show']);
 
@@ -526,6 +528,7 @@ Route::middleware(['web', InjectSanctumBearerFromCookie::class, 'auth:sanctum', 
 
     Route::get('/appointments', [AppointmentController::class, 'index']);
     Route::post('/appointments', [AppointmentController::class, 'store']);
+    Route::get('/appointments/calendar-version', [AppointmentController::class, 'calendarVersion']);
     Route::get('/appointments/{appointment}', [AppointmentController::class, 'show']);
     Route::put('/appointments/{appointment}', [AppointmentController::class, 'update']);
     Route::delete('/appointments/{appointment}', [AppointmentController::class, 'destroy']);

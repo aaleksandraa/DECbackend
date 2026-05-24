@@ -11,6 +11,7 @@ use App\Exceptions\BookingUnavailableException;
 use App\Models\Appointment;
 use App\Models\Salon;
 use App\Models\Staff;
+use App\Models\SystemSetting;
 use App\Services\AppointmentService;
 use App\Services\BookingService;
 use App\Services\NotificationService;
@@ -221,6 +222,122 @@ class AppointmentController extends Controller
         $appointment->load(['salon', 'staff', 'service', 'review']);
 
         return new AppointmentResource($appointment);
+    }
+
+    /**
+     * Return a lightweight version token for appointments in the current calendar range.
+     */
+    public function calendarVersion(Request $request): JsonResponse
+    {
+        $user = $request->user();
+        if (!$user) {
+            abort(401, 'Unauthorized');
+        }
+
+        if (!SystemSetting::get('calendar_realtime_refresh_enabled', true)) {
+            return response()->json([
+                'enabled' => false,
+                'version' => null,
+                'latest_updated_at' => null,
+                'count' => null,
+            ]);
+        }
+
+        $startDate = $this->normalizeCalendarDate($request->query('start_date'));
+        $endDate = $this->normalizeCalendarDate($request->query('end_date'));
+
+        if (!$startDate || !$endDate) {
+            return response()->json([
+                'message' => 'start_date and end_date are required in DD.MM.YYYY or YYYY-MM-DD format.',
+            ], 422);
+        }
+
+        if ($startDate > $endDate) {
+            return response()->json([
+                'message' => 'start_date must be before or equal to end_date.',
+            ], 422);
+        }
+
+        $query = Appointment::query()
+            ->whereBetween('date', [$startDate, $endDate]);
+
+        if ($user->isClient()) {
+            $query->where('client_id', $user->id);
+        } elseif ($user->isStaff()) {
+            $staffProfile = $user->staffProfile;
+            if (!$staffProfile) {
+                return response()->json([
+                    'message' => 'Staff profile not found.',
+                ], 404);
+            }
+
+            $query->where('staff_id', $staffProfile->id);
+        } elseif ($user->isSalonOwner()) {
+            $ownedSalon = $user->ownedSalon;
+            if (!$ownedSalon) {
+                return response()->json([
+                    'message' => 'Salon not found.',
+                ], 404);
+            }
+
+            $query->where('salon_id', $ownedSalon->id);
+
+            if ($request->filled('staff_id') && $request->query('staff_id') !== 'all') {
+                $staffId = (int) $request->query('staff_id');
+                $belongsToSalon = Staff::where('id', $staffId)
+                    ->where('salon_id', $ownedSalon->id)
+                    ->exists();
+
+                if (!$belongsToSalon) {
+                    return response()->json([
+                        'message' => 'Invalid staff filter for this salon.',
+                    ], 422);
+                }
+
+                $query->where('staff_id', $staffId);
+            }
+        } else {
+            return response()->json([
+                'message' => 'Unauthorized.',
+            ], 403);
+        }
+
+        $summary = $query
+            ->selectRaw('COUNT(*) as appointments_count, MAX(updated_at) as latest_updated_at')
+            ->first();
+
+        $count = (int) ($summary?->appointments_count ?? 0);
+        $latestUpdatedAt = $summary?->latest_updated_at
+            ? Carbon::parse($summary->latest_updated_at)
+            : null;
+
+        return response()->json([
+            'enabled' => true,
+            'version' => $count . ':' . ($latestUpdatedAt?->getTimestamp() ?? 'none'),
+            'latest_updated_at' => $latestUpdatedAt?->toIso8601String(),
+            'count' => $count,
+        ]);
+    }
+
+    private function normalizeCalendarDate(?string $date): ?string
+    {
+        if (!$date) {
+            return null;
+        }
+
+        try {
+            if (preg_match('/^\d{2}\.\d{2}\.\d{4}$/', $date)) {
+                return Carbon::createFromFormat('d.m.Y', $date)->format('Y-m-d');
+            }
+
+            if (preg_match('/^\d{4}-\d{2}-\d{2}$/', $date)) {
+                return Carbon::createFromFormat('Y-m-d', $date)->format('Y-m-d');
+            }
+        } catch (\Throwable) {
+            return null;
+        }
+
+        return null;
     }
 
     /**

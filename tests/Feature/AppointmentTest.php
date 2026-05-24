@@ -7,6 +7,7 @@ use App\Models\Salon;
 use App\Models\Staff;
 use App\Models\Service;
 use App\Models\Appointment;
+use App\Models\SystemSetting;
 use App\Models\User;
 use App\Models\WidgetSetting;
 use Illuminate\Foundation\Testing\RefreshDatabase;
@@ -145,6 +146,114 @@ class AppointmentTest extends TestCase
             'client_id' => $this->client->id,
             'salon_id' => $this->salon->id,
         ]);
+    }
+
+    public function test_calendar_version_is_scoped_to_salon_owner(): void
+    {
+        $owner = User::factory()->create(['role' => 'salon']);
+        $salon = Salon::factory()->create([
+            'owner_id' => $owner->id,
+            'status' => 'approved',
+        ]);
+        $staff = Staff::factory()->create(['salon_id' => $salon->id]);
+        $service = Service::factory()->create(['salon_id' => $salon->id]);
+        $otherSalon = Salon::factory()->create(['status' => 'approved']);
+        $otherStaff = Staff::factory()->create(['salon_id' => $otherSalon->id]);
+        $otherService = Service::factory()->create(['salon_id' => $otherSalon->id]);
+        $date = '2026-01-15';
+
+        Appointment::factory()->create([
+            'salon_id' => $salon->id,
+            'staff_id' => $staff->id,
+            'service_id' => $service->id,
+            'date' => $date,
+            'time' => '09:00',
+            'end_time' => '09:30',
+        ]);
+
+        Appointment::factory()->create([
+            'salon_id' => $otherSalon->id,
+            'staff_id' => $otherStaff->id,
+            'service_id' => $otherService->id,
+            'date' => $date,
+            'time' => '10:00',
+            'end_time' => '10:30',
+        ]);
+
+        $response = $this->actingAs($owner)->getJson('/api/v1/appointments/calendar-version?start_date=15.01.2026&end_date=15.01.2026');
+
+        $response->assertOk()
+            ->assertJson([
+                'count' => 1,
+            ])
+            ->assertJsonStructure([
+                'enabled',
+                'version',
+                'latest_updated_at',
+                'count',
+            ]);
+    }
+
+    public function test_calendar_version_can_be_disabled_by_system_setting(): void
+    {
+        SystemSetting::set('calendar_realtime_refresh_enabled', false, 'boolean', 'performance');
+
+        $owner = User::factory()->create(['role' => 'salon']);
+        Salon::factory()->create([
+            'owner_id' => $owner->id,
+            'status' => 'approved',
+        ]);
+
+        $response = $this->actingAs($owner)->getJson('/api/v1/appointments/calendar-version?start_date=15.01.2026&end_date=15.01.2026');
+
+        $response->assertOk()
+            ->assertJson([
+                'enabled' => false,
+                'version' => null,
+                'latest_updated_at' => null,
+                'count' => null,
+            ]);
+    }
+
+    public function test_admin_can_disable_calendar_realtime_refresh_setting(): void
+    {
+        $admin = User::factory()->create(['role' => 'admin']);
+
+        $response = $this->actingAs($admin)->putJson('/api/v1/admin/settings', [
+            'settings' => [
+                [
+                    'key' => 'calendar_realtime_refresh_enabled',
+                    'value' => false,
+                ],
+            ],
+        ]);
+
+        $response->assertOk();
+
+        $this->assertFalse(SystemSetting::get('calendar_realtime_refresh_enabled', true));
+        $this->assertDatabaseHas('system_settings', [
+            'key' => 'calendar_realtime_refresh_enabled',
+            'value' => 'false',
+            'type' => 'boolean',
+            'group' => 'performance',
+        ]);
+    }
+
+    public function test_calendar_version_rejects_staff_filter_outside_owner_salon(): void
+    {
+        $owner = User::factory()->create(['role' => 'salon']);
+        Salon::factory()->create([
+            'owner_id' => $owner->id,
+            'status' => 'approved',
+        ]);
+        $otherSalon = Salon::factory()->create(['status' => 'approved']);
+        $otherStaff = Staff::factory()->create(['salon_id' => $otherSalon->id]);
+
+        $response = $this->actingAs($owner)->getJson(
+            "/api/v1/appointments/calendar-version?start_date=15.01.2026&end_date=15.01.2026&staff_id={$otherStaff->id}"
+        );
+
+        $response->assertStatus(422);
     }
 
     /**

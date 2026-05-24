@@ -74,6 +74,23 @@ class SettingsController extends Controller
             $setting = SystemSetting::where('key', $settingData['key'])->first();
             $value = $settingData['value'];
 
+            if ($settingData['key'] === 'calendar_realtime_refresh_enabled') {
+                $enabled = in_array($value, [true, 1, '1', 'true'], true);
+
+                SystemSetting::set(
+                    'calendar_realtime_refresh_enabled',
+                    $enabled ? 'true' : 'false',
+                    'boolean',
+                    'performance'
+                );
+
+                SystemSetting::where('key', 'calendar_realtime_refresh_enabled')->update([
+                    'description' => 'Enable lightweight 60-second calendar freshness checks for salon calendar views.',
+                ]);
+
+                continue;
+            }
+
             if ($setting) {
                 // Convert boolean values to string for storage
                 if ($setting->type === 'boolean') {
@@ -93,6 +110,7 @@ class SettingsController extends Controller
                 // Create the setting if it doesn't exist
                 $type = 'string';
                 $group = 'analytics';
+                $description = null;
 
                 // Determine type based on key name or value
                 if (str_contains($settingData['key'], 'enabled') || is_bool($value)) {
@@ -105,6 +123,7 @@ class SettingsController extends Controller
                     'value' => is_array($value) ? json_encode($value) : $value,
                     'type' => $type,
                     'group' => $group,
+                    'description' => $description,
                 ]);
 
                 // Clear cache for this setting

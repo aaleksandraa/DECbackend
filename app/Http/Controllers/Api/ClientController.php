@@ -32,193 +32,104 @@ class ClientController extends Controller
             return response()->json(['message' => 'Salon not found'], 404);
         }
 
-        $search = trim((string) $request->input('search', ''));
-        $perPage = max(1, min((int) $request->input('per_page', 20), 500));
+        $directory = $this->buildClientDirectoryQuery($request, $salonId);
+        $perPage = max(1, min((int) $request->input('per_page', 25), 100));
         $page = max(1, (int) $request->input('page', 1));
-        $sortBy = (string) $request->input('sort_by', 'last_visit');
-        $sortDirection = strtolower((string) $request->input('sort_direction', 'desc'));
-        $lastVisitFilter = (string) $request->input('last_visit_filter', 'all');
 
-        if (!in_array($sortBy, ['name', 'total_appointments', 'total_spent', 'last_visit', 'member_since'], true)) {
-            $sortBy = 'last_visit';
-        }
-
-        if (!in_array($sortDirection, ['asc', 'desc'], true)) {
-            $sortDirection = 'desc';
-        }
-
-        $staffIds = $this->normalizeIntArray($request->input('staff_ids', []));
-        $serviceIds = $this->normalizeIntArray($request->input('service_ids', []));
-        $serviceCategories = $this->normalizeStringArray($request->input('service_categories', []));
-
-        $serviceOptions = Service::query()
-            ->where('salon_id', $salonId)
-            ->orderBy('name')
-            ->get(['id', 'name', 'category']);
-
-        $categoryOptions = $serviceOptions
-            ->pluck('category')
-            ->filter(fn($category) => is_string($category) && trim($category) !== '')
-            ->map(fn($category) => trim((string) $category))
-            ->unique()
-            ->sort()
-            ->values();
-
-        $categoryServiceIds = [];
-        if (!empty($serviceCategories)) {
-            $categoryServiceIds = $serviceOptions
-                ->whereIn('category', $serviceCategories)
-                ->pluck('id')
-                ->map(fn($id) => (int) $id)
-                ->all();
-        }
-
-        $resolvedServiceIds = array_values(array_unique(array_merge($serviceIds, $categoryServiceIds)));
-
-        $staffOptions = Staff::query()
-            ->with('user:id,name')
-            ->where('salon_id', $salonId)
-            ->orderBy('name')
-            ->get(['id', 'name', 'user_id'])
-            ->map(function (Staff $staff) {
-                $displayName = trim((string) ($staff->name ?: ($staff->user?->name ?? '')));
-                if ($displayName === '') {
-                    $displayName = 'Zaposleni #' . $staff->id;
-                }
-
-                return [
-                    'id' => (int) $staff->id,
-                    'name' => $displayName,
-                ];
-            })
-            ->values();
-
-        if ((!empty($serviceIds) || !empty($serviceCategories)) && empty($resolvedServiceIds)) {
+        if ($directory['empty']) {
             return response()->json([
                 'clients' => [],
                 'total' => 0,
                 'per_page' => $perPage,
                 'current_page' => $page,
                 'last_page' => 0,
-                'filters' => [
-                    'staff' => $staffOptions,
-                    'services' => $serviceOptions->map(fn($service) => [
-                        'id' => (int) $service->id,
-                        'name' => $service->name,
-                        'category' => $service->category,
-                    ])->values(),
-                    'categories' => $categoryOptions,
-                ],
-                'applied_filters' => [
-                    'search' => $search,
-                    'last_visit_filter' => $lastVisitFilter,
-                    'staff_ids' => $staffIds,
-                    'service_ids' => $serviceIds,
-                    'service_categories' => $serviceCategories,
-                ],
+                'filters' => $directory['filters'],
+                'applied_filters' => $directory['applied_filters'],
             ]);
         }
 
-        $query = Appointment::query()
-            ->join('users', 'users.id', '=', 'appointments.client_id')
-            ->where('appointments.salon_id', $salonId)
-            ->where('appointments.status', '!=', 'cancelled');
-
-        if (!empty($staffIds)) {
-            $query->whereIn('appointments.staff_id', $staffIds);
-        }
-
-        if (!empty($resolvedServiceIds)) {
-            $this->applyServiceFilter($query, $resolvedServiceIds);
-        }
-
-        if ($search !== '') {
-            $searchLower = mb_strtolower($search);
-            $searchLike = '%' . $searchLower . '%';
-
-            $query->where(function ($q) use ($searchLike) {
-                $q->whereRaw('LOWER(users.name) LIKE ?', [$searchLike])
-                    ->orWhereRaw('LOWER(users.email) LIKE ?', [$searchLike])
-                    ->orWhereRaw('LOWER(COALESCE(users.phone, \'\')) LIKE ?', [$searchLike]);
-                });
-        }
-
-        $recognizedCountCase = Appointment::recognizedCompletedCountCaseExpression('appointments');
-        $recognizedRevenueCase = Appointment::recognizedRevenueCaseExpression('appointments');
-        $recognizedBindings = Appointment::recognizedRevenueBindings();
-
-        $query
-            ->select([
-                'users.id',
-                'users.name',
-                'users.email',
-                'users.phone',
-                'users.avatar',
-            ])
-            ->selectRaw('COUNT(appointments.id) as total_appointments')
-            ->selectRaw("SUM({$recognizedCountCase}) as completed_appointments", $recognizedBindings)
-            ->selectRaw("SUM({$recognizedRevenueCase}) as total_spent", $recognizedBindings)
-            ->selectRaw('MAX(appointments.date) as last_visit')
-            ->selectRaw('MIN(appointments.created_at) as member_since')
-            ->groupBy('users.id', 'users.name', 'users.email', 'users.phone', 'users.avatar');
-
-        $cutoffDate = $this->resolveLastVisitCutoffDate($lastVisitFilter);
-        if ($cutoffDate) {
-            $query->havingRaw('MAX(appointments.date) >= ?', [$cutoffDate->format('Y-m-d')]);
-        }
-
-        $sortColumns = [
-            'name' => 'users.name',
-            'total_appointments' => 'total_appointments',
-            'total_spent' => 'total_spent',
-            'last_visit' => 'last_visit',
-            'member_since' => 'member_since',
-        ];
-        $query->orderBy($sortColumns[$sortBy] ?? 'last_visit', $sortDirection);
-
-        $allClients = $query->get()->map(function ($client) {
-            $lastVisit = $client->last_visit ? Carbon::parse($client->last_visit)->format('Y-m-d') : null;
-            $memberSince = $client->member_since ? Carbon::parse($client->member_since)->toIso8601String() : null;
-
-            return [
-                'id' => (int) $client->id,
-                'name' => $client->name,
-                'email' => $client->email,
-                'phone' => $client->phone,
-                'avatar' => $client->avatar,
-                'total_appointments' => (int) $client->total_appointments,
-                'completed_appointments' => (int) $client->completed_appointments,
-                'last_visit' => $lastVisit,
-                'total_spent' => round((float) $client->total_spent, 2),
-                'member_since' => $memberSince,
-            ];
-        });
-
-        $total = $allClients->count();
-        $clients = $allClients->slice(($page - 1) * $perPage, $perPage)->values();
+        $paginator = $directory['query']->paginate($perPage, ['*'], 'page', $page);
+        $clients = $paginator->getCollection()
+            ->map(fn($client) => $this->formatClientSummary($client))
+            ->values();
 
         return response()->json([
             'clients' => $clients,
-            'total' => $total,
+            'total' => $paginator->total(),
             'per_page' => $perPage,
-            'current_page' => $page,
-            'last_page' => $total > 0 ? (int) ceil($total / $perPage) : 0,
-            'filters' => [
-                'staff' => $staffOptions,
-                'services' => $serviceOptions->map(fn($service) => [
-                    'id' => (int) $service->id,
-                    'name' => $service->name,
-                    'category' => $service->category,
-                ])->values(),
-                'categories' => $categoryOptions,
-            ],
-            'applied_filters' => [
-                'search' => $search,
-                'last_visit_filter' => $lastVisitFilter,
-                'staff_ids' => $staffIds,
-                'service_ids' => $serviceIds,
-                'service_categories' => $serviceCategories,
-            ],
+            'current_page' => $paginator->currentPage(),
+            'last_page' => $paginator->lastPage(),
+            'filters' => $directory['filters'],
+            'applied_filters' => $directory['applied_filters'],
+        ]);
+    }
+
+    /**
+     * Export all clients matching the current filters as CSV.
+     */
+    public function export(Request $request)
+    {
+        $user = $request->user();
+
+        if (!$user) {
+            return response()->json(['message' => 'Unauthorized'], 401);
+        }
+
+        [$salonId, $salonName] = $this->resolveSalonContext($user);
+        if (!$salonId) {
+            return response()->json(['message' => 'Salon not found'], 404);
+        }
+
+        $directory = $this->buildClientDirectoryQuery($request, $salonId);
+        $safeSalonName = preg_replace('/[^A-Za-z0-9_-]+/', '-', trim($salonName)) ?: 'salon';
+        $filename = 'klijenti-' . $safeSalonName . '-' . now()->format('Y-m-d-His') . '.csv';
+
+        return response()->streamDownload(function () use ($directory) {
+            $output = fopen('php://output', 'w');
+            fprintf($output, chr(0xEF) . chr(0xBB) . chr(0xBF));
+
+            fputcsv($output, [
+                'Ime i prezime',
+                'Email',
+                'Telefon',
+                'Ukupno termina',
+                'Zavrseni termini',
+                'Zadnja posjeta',
+                'Ukupno potroseno',
+                'Clan od',
+            ]);
+
+            if (!$directory['empty']) {
+                $page = 1;
+                $perPage = 500;
+
+                do {
+                    $clients = (clone $directory['query'])
+                        ->forPage($page, $perPage)
+                        ->get();
+
+                    foreach ($clients as $client) {
+                        $client = $this->formatClientSummary($client);
+
+                        fputcsv($output, [
+                            $client['name'],
+                            $client['email'],
+                            $client['phone'],
+                            $client['total_appointments'],
+                            $client['completed_appointments'],
+                            $client['last_visit'],
+                            number_format((float) $client['total_spent'], 2, '.', ''),
+                            $client['member_since'],
+                        ]);
+                    }
+
+                    $page++;
+                } while ($clients->count() === $perPage);
+            }
+
+            fclose($output);
+        }, $filename, [
+            'Content-Type' => 'text/csv; charset=UTF-8',
         ]);
     }
 
@@ -382,6 +293,181 @@ class ClientController extends Controller
             'skipped_missing_email' => $skippedNoEmail,
             'placeholders' => ['{ime}', '{korisnicko_ime}', '{name}'],
         ]);
+    }
+
+    /**
+     * Build the shared filtered client query plus filter metadata.
+     */
+    private function buildClientDirectoryQuery(Request $request, int $salonId): array
+    {
+        $search = trim((string) $request->input('search', ''));
+        $sortBy = (string) $request->input('sort_by', 'last_visit');
+        $sortDirection = strtolower((string) $request->input('sort_direction', 'desc'));
+        $lastVisitFilter = (string) $request->input('last_visit_filter', 'all');
+
+        if (!in_array($sortBy, ['name', 'total_appointments', 'total_spent', 'last_visit', 'member_since'], true)) {
+            $sortBy = 'last_visit';
+        }
+
+        if (!in_array($sortDirection, ['asc', 'desc'], true)) {
+            $sortDirection = 'desc';
+        }
+
+        $staffIds = $this->normalizeIntArray($request->input('staff_ids', []));
+        $serviceIds = $this->normalizeIntArray($request->input('service_ids', []));
+        $serviceCategories = $this->normalizeStringArray($request->input('service_categories', []));
+
+        $serviceOptions = Service::query()
+            ->where('salon_id', $salonId)
+            ->orderBy('name')
+            ->get(['id', 'name', 'category']);
+
+        $categoryOptions = $serviceOptions
+            ->pluck('category')
+            ->filter(fn($category) => is_string($category) && trim($category) !== '')
+            ->map(fn($category) => trim((string) $category))
+            ->unique()
+            ->sort()
+            ->values();
+
+        $categoryServiceIds = [];
+        if (!empty($serviceCategories)) {
+            $categoryServiceIds = $serviceOptions
+                ->whereIn('category', $serviceCategories)
+                ->pluck('id')
+                ->map(fn($id) => (int) $id)
+                ->all();
+        }
+
+        $resolvedServiceIds = array_values(array_unique(array_merge($serviceIds, $categoryServiceIds)));
+
+        $staffOptions = Staff::query()
+            ->with('user:id,name')
+            ->where('salon_id', $salonId)
+            ->orderBy('name')
+            ->get(['id', 'name', 'user_id'])
+            ->map(function (Staff $staff) {
+                $displayName = trim((string) ($staff->name ?: ($staff->user?->name ?? '')));
+                if ($displayName === '') {
+                    $displayName = 'Zaposleni #' . $staff->id;
+                }
+
+                return [
+                    'id' => (int) $staff->id,
+                    'name' => $displayName,
+                ];
+            })
+            ->values();
+
+        $filters = [
+            'staff' => $staffOptions,
+            'services' => $serviceOptions->map(fn($service) => [
+                'id' => (int) $service->id,
+                'name' => $service->name,
+                'category' => $service->category,
+            ])->values(),
+            'categories' => $categoryOptions,
+        ];
+
+        $appliedFilters = [
+            'search' => $search,
+            'last_visit_filter' => $lastVisitFilter,
+            'staff_ids' => $staffIds,
+            'service_ids' => $serviceIds,
+            'service_categories' => $serviceCategories,
+        ];
+
+        if ((!empty($serviceIds) || !empty($serviceCategories)) && empty($resolvedServiceIds)) {
+            return [
+                'query' => null,
+                'empty' => true,
+                'filters' => $filters,
+                'applied_filters' => $appliedFilters,
+            ];
+        }
+
+        $query = Appointment::query()
+            ->join('users', 'users.id', '=', 'appointments.client_id')
+            ->where('appointments.salon_id', $salonId)
+            ->where('appointments.status', '!=', 'cancelled');
+
+        if (!empty($staffIds)) {
+            $query->whereIn('appointments.staff_id', $staffIds);
+        }
+
+        if (!empty($resolvedServiceIds)) {
+            $this->applyServiceFilter($query, $resolvedServiceIds);
+        }
+
+        if ($search !== '') {
+            $searchLower = mb_strtolower($search);
+            $searchLike = '%' . $searchLower . '%';
+
+            $query->where(function ($q) use ($searchLike) {
+                $q->whereRaw('LOWER(users.name) LIKE ?', [$searchLike])
+                    ->orWhereRaw('LOWER(users.email) LIKE ?', [$searchLike])
+                    ->orWhereRaw('LOWER(COALESCE(users.phone, \'\')) LIKE ?', [$searchLike]);
+            });
+        }
+
+        $recognizedCountCase = Appointment::recognizedCompletedCountCaseExpression('appointments');
+        $recognizedRevenueCase = Appointment::recognizedRevenueCaseExpression('appointments');
+        $recognizedBindings = Appointment::recognizedRevenueBindings();
+
+        $query
+            ->select([
+                'users.id',
+                'users.name',
+                'users.email',
+                'users.phone',
+                'users.avatar',
+            ])
+            ->selectRaw('COUNT(appointments.id) as total_appointments')
+            ->selectRaw("SUM({$recognizedCountCase}) as completed_appointments", $recognizedBindings)
+            ->selectRaw("SUM({$recognizedRevenueCase}) as total_spent", $recognizedBindings)
+            ->selectRaw('MAX(appointments.date) as last_visit')
+            ->selectRaw('MIN(appointments.created_at) as member_since')
+            ->groupBy('users.id', 'users.name', 'users.email', 'users.phone', 'users.avatar');
+
+        $cutoffDate = $this->resolveLastVisitCutoffDate($lastVisitFilter);
+        if ($cutoffDate) {
+            $query->havingRaw('MAX(appointments.date) >= ?', [$cutoffDate->format('Y-m-d')]);
+        }
+
+        $sortColumns = [
+            'name' => 'users.name',
+            'total_appointments' => 'total_appointments',
+            'total_spent' => 'total_spent',
+            'last_visit' => 'last_visit',
+            'member_since' => 'member_since',
+        ];
+        $query->orderBy($sortColumns[$sortBy] ?? 'last_visit', $sortDirection);
+
+        return [
+            'query' => $query,
+            'empty' => false,
+            'filters' => $filters,
+            'applied_filters' => $appliedFilters,
+        ];
+    }
+
+    private function formatClientSummary($client): array
+    {
+        $lastVisit = $client->last_visit ? Carbon::parse($client->last_visit)->format('Y-m-d') : null;
+        $memberSince = $client->member_since ? Carbon::parse($client->member_since)->toIso8601String() : null;
+
+        return [
+            'id' => (int) $client->id,
+            'name' => $client->name,
+            'email' => $client->email,
+            'phone' => $client->phone,
+            'avatar' => $client->avatar,
+            'total_appointments' => (int) $client->total_appointments,
+            'completed_appointments' => (int) $client->completed_appointments,
+            'last_visit' => $lastVisit,
+            'total_spent' => round((float) $client->total_spent, 2),
+            'member_since' => $memberSince,
+        ];
     }
 
     /**
