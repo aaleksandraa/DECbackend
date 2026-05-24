@@ -79,6 +79,49 @@ class ClientManagementTest extends TestCase
         $this->assertStringContainsString('Ema Export', $content);
     }
 
+    public function test_clients_can_be_filtered_to_only_clients_with_upcoming_appointments(): void
+    {
+        [$owner, $salon, $staff, $service] = $this->createSalonContext();
+
+        $upcomingClient = User::factory()->create([
+            'role' => 'klijent',
+            'name' => 'Client With Future Appointment',
+        ]);
+        $pastClient = User::factory()->create([
+            'role' => 'klijent',
+            'name' => 'Client With Past Appointment',
+        ]);
+
+        Appointment::factory()->create([
+            'salon_id' => $salon->id,
+            'staff_id' => $staff->id,
+            'service_id' => $service->id,
+            'client_id' => $upcomingClient->id,
+            'date' => now()->addDay()->format('Y-m-d'),
+            'time' => '10:00',
+            'status' => 'confirmed',
+        ]);
+
+        Appointment::factory()->create([
+            'salon_id' => $salon->id,
+            'staff_id' => $staff->id,
+            'service_id' => $service->id,
+            'client_id' => $pastClient->id,
+            'date' => now()->subDay()->format('Y-m-d'),
+            'time' => '10:00',
+            'status' => 'confirmed',
+        ]);
+
+        $response = $this->actingAs($owner)->getJson('/api/v1/clients?appointment_filter=upcoming');
+
+        $response->assertOk()
+            ->assertJson([
+                'total' => 1,
+            ]);
+
+        $this->assertSame('Client With Future Appointment', $response->json('clients.0.name'));
+    }
+
     private function createSalonContext(): array
     {
         $owner = User::factory()->create(['role' => 'salon']);

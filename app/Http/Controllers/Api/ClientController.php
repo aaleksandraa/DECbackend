@@ -304,6 +304,7 @@ class ClientController extends Controller
         $sortBy = (string) $request->input('sort_by', 'last_visit');
         $sortDirection = strtolower((string) $request->input('sort_direction', 'desc'));
         $lastVisitFilter = (string) $request->input('last_visit_filter', 'all');
+        $appointmentFilter = (string) $request->input('appointment_filter', 'all');
 
         if (!in_array($sortBy, ['name', 'total_appointments', 'total_spent', 'last_visit', 'member_since'], true)) {
             $sortBy = 'last_visit';
@@ -311,6 +312,10 @@ class ClientController extends Controller
 
         if (!in_array($sortDirection, ['asc', 'desc'], true)) {
             $sortDirection = 'desc';
+        }
+
+        if (!in_array($appointmentFilter, ['all', 'upcoming'], true)) {
+            $appointmentFilter = 'all';
         }
 
         $staffIds = $this->normalizeIntArray($request->input('staff_ids', []));
@@ -372,6 +377,7 @@ class ClientController extends Controller
         $appliedFilters = [
             'search' => $search,
             'last_visit_filter' => $lastVisitFilter,
+            'appointment_filter' => $appointmentFilter,
             'staff_ids' => $staffIds,
             'service_ids' => $serviceIds,
             'service_categories' => $serviceCategories,
@@ -432,6 +438,17 @@ class ClientController extends Controller
         $cutoffDate = $this->resolveLastVisitCutoffDate($lastVisitFilter);
         if ($cutoffDate) {
             $query->havingRaw('MAX(appointments.date) >= ?', [$cutoffDate->format('Y-m-d')]);
+        }
+
+        if ($appointmentFilter === 'upcoming') {
+            $today = now()->format('Y-m-d');
+            $currentTime = now()->format('H:i');
+            $statusPlaceholders = implode(', ', array_fill(0, count(Appointment::BLOCKING_STATUSES), '?'));
+
+            $query->havingRaw(
+                "SUM(CASE WHEN ((appointments.date > ? OR (appointments.date = ? AND appointments.time >= ?)) AND appointments.status IN ({$statusPlaceholders})) THEN 1 ELSE 0 END) > 0",
+                array_merge([$today, $today, $currentTime], Appointment::BLOCKING_STATUSES)
+            );
         }
 
         $sortColumns = [
