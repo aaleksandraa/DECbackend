@@ -366,6 +366,9 @@ Route::prefix('v1')->group(function () {
             Route::put('/salons/{salon}/suspend', [AdminController::class, 'suspendSalon']);
             Route::get('/analytics', [AdminController::class, 'analytics']);
             Route::get('/social-integrations/health', [\App\Http\Controllers\Api\Admin\SocialIntegrationController::class, 'healthCheck']);
+            Route::post('/social-integrations/{salon}/force-disconnect', [\App\Http\Controllers\Api\Admin\SocialIntegrationController::class, 'forceDisconnect']);
+            Route::get('/booking-safety/report', [\App\Http\Controllers\Api\Admin\BookingSafetyController::class, 'report']);
+            Route::post('/booking-safety/backfill', [\App\Http\Controllers\Api\Admin\BookingSafetyController::class, 'backfill']);
 
             // GDPR Consents management
             Route::get('/consents', [AdminController::class, 'consents']);

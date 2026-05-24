@@ -23,7 +23,7 @@ class UpdateReviewRequest extends BaseRequest
     {
         return [
             'rating' => 'sometimes|integer|min:1|max:5',
-            'comment' => 'sometimes|string|max:1000',
+            'comment' => 'sometimes|string|min:3|max:1000',
         ];
     }
 }

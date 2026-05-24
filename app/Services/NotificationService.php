@@ -554,7 +554,22 @@ class NotificationService
     public function sendReviewRequestEmail(Appointment $appointment): void
     {
         try {
-            $appointment->load(['salon', 'staff', 'service', 'client']);
+            $appointment->loadMissing(['salon', 'staff', 'service', 'client', 'review']);
+
+            if ($appointment->status !== 'completed') {
+                Log::info("Skipping review request email - appointment {$appointment->id} is not completed");
+                return;
+            }
+
+            if ($appointment->review_request_sent_at) {
+                Log::info("Skipping review request email - already sent for appointment {$appointment->id}");
+                return;
+            }
+
+            if ($appointment->review) {
+                Log::info("Skipping review request email - appointment {$appointment->id} already has a review");
+                return;
+            }
 
             // Only send email if client is a registered user with email
             $client = $appointment->client;
@@ -564,6 +579,8 @@ class NotificationService
             }
 
             Mail::to($client->email)->send(new ReviewRequestMail($appointment));
+
+            $appointment->forceFill(['review_request_sent_at' => now()])->save();
 
             Log::info("Review request email sent to {$client->email} for appointment {$appointment->id}");
         } catch (\Exception $e) {

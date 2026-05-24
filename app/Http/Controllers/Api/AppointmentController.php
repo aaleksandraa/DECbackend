@@ -6,32 +6,34 @@ use App\Http\Controllers\Controller;
 use App\Http\Requests\Appointment\StoreAppointmentRequest;
 use App\Http\Requests\Appointment\UpdateAppointmentRequest;
 use App\Http\Resources\AppointmentResource;
-use App\Mail\AppointmentConfirmationMail;
+use App\Exceptions\BookingConflictException;
+use App\Exceptions\BookingUnavailableException;
 use App\Models\Appointment;
 use App\Models\Salon;
-use App\Models\Service;
 use App\Models\Staff;
 use App\Services\AppointmentService;
+use App\Services\BookingService;
 use App\Services\NotificationService;
 use Carbon\Carbon;
-use Illuminate\Database\QueryException;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Http\Resources\Json\AnonymousResourceCollection;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
-use Illuminate\Support\Facades\Mail;
 
 class AppointmentController extends Controller
 {
     protected $appointmentService;
     protected $notificationService;
+    protected BookingService $bookingService;
 
     public function __construct(
         AppointmentService $appointmentService,
+        BookingService $bookingService,
         NotificationService $notificationService
     ) {
         $this->appointmentService = $appointmentService;
+        $this->bookingService = $bookingService;
         $this->notificationService = $notificationService;
     }
 
@@ -164,153 +166,49 @@ class AppointmentController extends Controller
         $isManualBooking = $user->role === 'salon' || $user->role === 'frizer';
 
         try {
-            return DB::transaction(function () use ($request, $user, $isManualBooking) {
-                // Lock the staff row to prevent concurrent booking
-                $staff = Staff::where('id', $request->staff_id)
-                    ->with(['breaks', 'vacations', 'salon.salonBreaks', 'salon.salonVacations', 'services'])
-                    ->lockForUpdate()
-                    ->firstOrFail();
+            $appointment = $this->bookingService->createAppointment($request->validated(), [
+                'booking_source' => $isManualBooking ? 'manual' : 'web',
+                'is_manual' => $isManualBooking,
+                'is_guest' => $isManualBooking,
+                'client' => $isManualBooking ? null : $user,
+                'create_guest_user' => $isManualBooking,
+                'idempotency_key' => $request->header('Idempotency-Key') ?: $request->input('idempotency_key'),
+            ]);
 
-                $salon = Salon::findOrFail($request->salon_id);
+            return response()->json([
+                'message' => 'Appointment created successfully',
+                'appointment' => new AppointmentResource($appointment),
+            ], 201);
+        } catch (BookingConflictException $e) {
+            Log::warning('Double booking attempt prevented', [
+                'user_id' => $user->id,
+                'staff_id' => $request->staff_id,
+                'date' => $request->date,
+                'time' => $request->time,
+            ]);
 
-                // Handle multi-service appointments
-                $serviceIds = [];
-                if ($request->has('services') && is_array($request->services)) {
-                    // Multi-service booking
-                    $serviceIds = array_column($request->services, 'id');
-                } elseif ($request->has('service_id')) {
-                    // Single service booking
-                    $serviceIds = [$request->service_id];
-                } else {
-                    return response()->json([
-                        'message' => 'Service ID or services array is required',
-                    ], 422);
-                }
+            return response()->json([
+                'message' => 'This time slot has just been booked by another user. Please select a different time.',
+                'code' => $e->reasonCode(),
+                'reason_code' => $e->reasonCode(),
+            ], 409);
+        } catch (BookingUnavailableException $e) {
+            return response()->json([
+                'message' => $e->getMessage(),
+                'code' => $e->reasonCode(),
+                'reason_code' => $e->reasonCode(),
+            ], 422);
+        } catch (\InvalidArgumentException|\RuntimeException $e) {
+            Log::warning('Booking request rejected', [
+                'error' => $e->getMessage(),
+                'type' => get_class($e),
+            ]);
 
-                // Load all services and calculate total duration
-                $services = Service::whereIn('id', $serviceIds)->get();
-                $totalDuration = 0;
-                $totalPrice = 0;
-                $zeroServices = [];
-
-                foreach ($services as $service) {
-                    if ($service->duration == 0) {
-                        $zeroServices[] = $service->name;
-                    }
-                    $totalDuration += $service->duration;
-                    $totalPrice += $service->discount_price ?? $service->price;
-
-                    // Check if staff can perform this service
-                    if (!$staff->services->contains($service->id)) {
-                        return response()->json([
-                            'message' => "The selected staff cannot perform service: {$service->name}",
-                        ], 422);
-                    }
-                }
-
-                // VALIDATION: Prevent booking if ALL services have zero duration
-                if ($totalDuration == 0) {
-                    return response()->json([
-                        'message' => 'Ne možete rezervisati usluge koje nemaju trajanje. Molimo odaberite drugu uslugu.',
-                        'code' => 'ZERO_DURATION_SERVICE',
-                        'services' => $zeroServices
-                    ], 422);
-                }
-
-                // Check if the staff is available at the requested time
-                if (!$this->appointmentService->isStaffAvailable($staff, $request->date, $request->time, $totalDuration)) {
-                    return response()->json([
-                        'message' => 'The selected staff is not available at the requested time',
-                    ], 422);
-                }
-
-                // Calculate end time based on total duration
-                $endTime = $this->appointmentService->calculateEndTime($request->time, $totalDuration);
-
-                // For manual bookings, auto-confirm the appointment
-                $initialStatus = $isManualBooking
-                    ? 'confirmed'
-                    : (($salon->auto_confirm || $staff->auto_confirm) ? 'confirmed' : 'pending');
-
-                // Convert European date format to ISO format for database
-                $dateForDb = Carbon::createFromFormat('d.m.Y', $request->date)->format('Y-m-d');
-
-                // Determine client info based on booking type
-                if ($isManualBooking) {
-                    $guestUser = null;
-                    if (!empty($request->client_email)) {
-                        $guestUser = $this->findOrCreateGuestUser([
-                            'name' => $request->client_name,
-                            'email' => $request->client_email,
-                            'phone' => $request->client_phone,
-                        ]);
-                    }
-
-                    $clientId = $guestUser?->id;
-                    $clientName = $request->client_name;
-                    $clientEmail = $request->client_email;
-                    $clientPhone = $request->client_phone;
-                    $isGuest = true;
-                    $guestAddress = $request->client_address;
-                } else {
-                    $clientId = $user->id;
-                    $clientName = $user->name;
-                    $clientEmail = $user->email;
-                    $clientPhone = $user->phone;
-                    $isGuest = false;
-                    $guestAddress = null;
-                }
-
-                // Create ONE appointment with all services
-                $appointment = Appointment::create([
-                    'client_id' => $clientId,
-                    'client_name' => $clientName,
-                    'client_email' => $clientEmail,
-                    'client_phone' => $clientPhone,
-                    'is_guest' => $isGuest,
-                    'guest_address' => $guestAddress,
-                    'salon_id' => $salon->id,
-                    'staff_id' => $staff->id,
-                    'service_id' => count($serviceIds) === 1 ? $serviceIds[0] : null, // For backward compatibility
-                    'service_ids' => $serviceIds, // Store all service IDs
-                    'date' => $dateForDb,
-                    'time' => $request->time,
-                    'end_time' => $endTime,
-                    'status' => $initialStatus,
-                    'notes' => $request->notes,
-                    'total_price' => $totalPrice,
-                    'payment_status' => 'pending',
-                ]);
-
-                // Send notifications
-                $this->notificationService->sendNewAppointmentNotifications($appointment);
-
-                // Send confirmation email to client
-                if ($clientEmail) {
-                    Mail::to($clientEmail)->send(new AppointmentConfirmationMail($appointment));
-                }
-
-                return response()->json([
-                    'message' => 'Appointment created successfully',
-                    'appointment' => new AppointmentResource($appointment->load(['salon', 'staff', 'service'])),
-                ], 201);
-            });
-        } catch (QueryException $e) {
-            if ($e->getCode() === '23505' || str_contains($e->getMessage(), 'appointments_no_double_booking')) {
-                Log::warning('Double booking attempt prevented', [
-                    'user_id' => $user->id,
-                    'staff_id' => $request->staff_id,
-                    'date' => $request->date,
-                    'time' => $request->time,
-                ]);
-
-                return response()->json([
-                    'message' => 'This time slot has just been booked by another user. Please select a different time.',
-                ], 422);
-            }
-
-            throw $e;
+            return response()->json([
+                'message' => $e->getMessage(),
+            ], 422);
         }
+
     }
 
     /**
@@ -335,106 +233,50 @@ class AppointmentController extends Controller
     {
         $this->authorize('update', $appointment);
 
-        // Convert date from European format if provided
-        $dateForQuery = null;
-        if ($request->has('date') && preg_match('/^\d{2}\.\d{2}\.\d{4}$/', $request->date)) {
-            $dateForQuery = Carbon::createFromFormat('d.m.Y', $request->date)->format('Y-m-d');
-        }
-
-        // If changing date/time/staff/service, check availability with locking
-        if ($request->has('date') || $request->has('time') || $request->has('staff_id') || $request->has('service_id')) {
-            try {
-                return DB::transaction(function () use ($request, $appointment, $dateForQuery) {
-                    $date = $dateForQuery ?? $request->date ?? $appointment->date;
-                    $time = $request->time ?? $appointment->time;
-                    $staffId = $request->staff_id ?? $appointment->staff_id;
-                    $serviceId = $request->service_id ?? $appointment->service_id;
-
-                    // Lock the staff row to prevent concurrent booking
-                    $staff = Staff::where('id', $staffId)
-                        ->with(['breaks', 'vacations', 'salon.salonBreaks', 'salon.salonVacations', 'services'])
-                        ->lockForUpdate()
-                        ->firstOrFail();
-
-                    $service = Service::findOrFail($serviceId);
-
-                    // Check if the staff can perform this service
-                    if (!$staff->services->contains($service->id)) {
-                        return response()->json([
-                            'message' => 'The selected staff cannot perform this service',
-                        ], 422);
-                    }
-
-                    // Check if the staff is available at the requested time (excluding this appointment)
-                    if (!$this->appointmentService->isStaffAvailable($staff, $date, $time, $service->duration, $appointment->id)) {
-                        return response()->json([
-                            'message' => 'The selected staff is not available at the requested time',
-                        ], 422);
-                    }
-
-                    // Build update data
-                    $updateData = $request->validated();
-
-                    // Replace date with converted format if needed
-                    if ($dateForQuery) {
-                        $updateData['date'] = $dateForQuery;
-                    }
-
-                    // Calculate end time if time or service changed
-                    if ($request->has('time') || $request->has('service_id')) {
-                        $updateData['end_time'] = $this->appointmentService->calculateEndTime($time, $service->duration);
-
-                        // Update total price if service changed
-                        if ($request->has('service_id')) {
-                            $updateData['total_price'] = $service->discount_price ?? $service->price;
-                        }
-                    }
-
-                    $oldStatus = $appointment->status;
-                    $appointment->update($updateData);
-
-                    // Send notifications if status changed
-                    if ($request->has('status') && $oldStatus !== $request->status) {
-                        $this->notificationService->sendAppointmentStatusChangeNotifications($appointment, $oldStatus);
-                    }
-
-                    return response()->json([
-                        'message' => 'Appointment updated successfully',
-                        'appointment' => new AppointmentResource($appointment->load(['salon', 'staff', 'service'])),
-                    ]);
-                });
-            } catch (QueryException $e) {
-                // Check if this is a unique constraint violation
-                if ($e->getCode() === '23505' || str_contains($e->getMessage(), 'appointments_no_double_booking')) {
-                    Log::warning('Double booking attempt prevented on update', [
-                        'appointment_id' => $appointment->id,
-                        'staff_id' => $request->staff_id ?? $appointment->staff_id,
-                        'date' => $request->date ?? $appointment->date,
-                        'time' => $request->time ?? $appointment->time,
-                    ]);
-
-                    return response()->json([
-                        'message' => 'This time slot has just been booked by another user. Please select a different time.',
-                    ], 422);
-                }
-
-                throw $e;
-            }
-        }
-
-        // If not changing scheduling fields, just update directly
         $oldStatus = $appointment->status;
-        $appointment->update($request->validated());
 
-        // Send notifications if status changed
-        if ($request->has('status') && $oldStatus !== $request->status) {
-            $this->notificationService->sendAppointmentStatusChangeNotifications($appointment, $oldStatus);
+        try {
+            $appointment = $this->bookingService->updateAppointment($appointment, $request->validated());
+
+            if ($request->has('status') && $oldStatus !== $appointment->status) {
+                $this->notificationService->sendAppointmentStatusChangeNotifications($appointment, $oldStatus);
+            }
+
+            return response()->json([
+                'message' => 'Appointment updated successfully',
+                'appointment' => new AppointmentResource($appointment),
+            ]);
+        } catch (BookingConflictException $e) {
+            Log::warning('Double booking attempt prevented on update', [
+                'appointment_id' => $appointment->id,
+                'staff_id' => $request->staff_id ?? $appointment->staff_id,
+                'date' => $request->date ?? $appointment->date,
+                'time' => $request->time ?? $appointment->time,
+            ]);
+
+            return response()->json([
+                'message' => 'This time slot has just been booked by another user. Please select a different time.',
+                'code' => $e->reasonCode(),
+                'reason_code' => $e->reasonCode(),
+            ], 409);
+        } catch (BookingUnavailableException $e) {
+            return response()->json([
+                'message' => $e->getMessage(),
+                'code' => $e->reasonCode(),
+                'reason_code' => $e->reasonCode(),
+            ], 422);
+        } catch (\InvalidArgumentException|\RuntimeException $e) {
+            Log::warning('Appointment update rejected', [
+                'appointment_id' => $appointment->id,
+                'error' => $e->getMessage(),
+                'type' => get_class($e),
+            ]);
+
+            return response()->json([
+                'message' => $e->getMessage(),
+            ], 422);
         }
 
-        return response()->json([
-            'message' => 'Appointment updated successfully',
-            'appointment' => new AppointmentResource($appointment->load(['salon', 'staff', 'service'])),
-        ]);
     }
 
     /**
@@ -874,8 +716,12 @@ class AppointmentController extends Controller
         $dtStart = $startTime->format('Ymd\THis');
         $dtEnd = $endTime->format('Ymd\THis');
 
-        // Build description
-        $description = $appointment->service->name;
+        // Build description with legacy single-service fallback.
+        $serviceNames = $appointment->services()->pluck('name')->filter()->values();
+        $serviceName = $serviceNames->isNotEmpty()
+            ? $serviceNames->join(', ')
+            : ($appointment->service?->name ?? 'Termin');
+        $description = $serviceName;
         if ($appointment->notes) {
             $description .= '\\n\\nNapomene: ' . $this->escapeIcsText($appointment->notes);
         }
@@ -892,7 +738,7 @@ class AppointmentController extends Controller
         }
 
         // Build summary
-        $summary = $appointment->service->name . ' - ' . $appointment->salon->name;
+        $summary = $serviceName . ' - ' . $appointment->salon->name;
 
         // Generate UID
         $uid = 'appointment-' . $appointment->id . '@frizerino.com';

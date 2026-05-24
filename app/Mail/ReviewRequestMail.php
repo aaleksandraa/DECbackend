@@ -34,9 +34,9 @@ class ReviewRequestMail extends Mailable implements ShouldQueue
         $this->staffName = $appointment->staff->name;
         $this->clientName = $appointment->client->name ?? $appointment->client_name ?? 'Klijent';
 
-        // Build review URL - frontend URL with salon slug and review parameter
+        // Build review URL - login redirects back here and opens the review modal for this appointment.
         $frontendUrl = config('app.frontend_url', 'http://localhost:5173');
-        $this->reviewUrl = "{$frontendUrl}/salon/{$this->salonSlug}?writeReview=true";
+        $this->reviewUrl = "{$frontendUrl}/moji-termini?review_appointment_id={$appointment->id}";
     }
 
     /**

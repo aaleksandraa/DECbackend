@@ -43,6 +43,14 @@ class AppointmentService
      */
     public function isStaffAvailable(Staff $staff, string $date, string $time, int $duration, ?string $excludeAppointmentId = null): bool
     {
+        return $this->getStaffUnavailabilityReason($staff, $date, $time, $duration, $excludeAppointmentId) === null;
+    }
+
+    /**
+     * Return a stable reason code when a staff member cannot accept a slot.
+     */
+    public function getStaffUnavailabilityReason(Staff $staff, string $date, string $time, int $duration, ?string $excludeAppointmentId = null): ?string
+    {
         // Convert date to ISO format for database queries
         $isoDate = $this->toIsoDate($date);
 
@@ -52,7 +60,7 @@ class AppointmentService
         // Check working hours
         $workingHours = $staff->working_hours[$dayOfWeek] ?? null;
         if (!$workingHours || !$workingHours['is_working']) {
-            return false;
+            return 'STAFF_NOT_WORKING';
         }
 
         // Check if time is within working hours
@@ -62,7 +70,7 @@ class AppointmentService
         $appointmentEndTime = strtotime("+{$duration} minutes", $appointmentTime);
 
         if ($appointmentTime < $startTime || $appointmentEndTime > $endTime) {
-            return false;
+            return 'OUTSIDE_WORKING_HOURS';
         }
 
         // Check for salon breaks
@@ -76,7 +84,7 @@ class AppointmentService
 
                 // Check if appointment overlaps with break
                 if (($appointmentTime < $breakEnd) && ($appointmentEndTime > $breakStart)) {
-                    return false;
+                    return 'SALON_BREAK';
                 }
             }
         }
@@ -86,7 +94,7 @@ class AppointmentService
             if (!$vacation->is_active) continue;
 
             if ($vacation->isActiveFor($isoDate)) {
-                return false;
+                return 'SALON_VACATION';
             }
         }
 
@@ -100,7 +108,7 @@ class AppointmentService
 
                 // Check if appointment overlaps with break
                 if (($appointmentTime < $breakEnd) && ($appointmentEndTime > $breakStart)) {
-                    return false;
+                    return 'STAFF_BREAK';
                 }
             }
         }
@@ -110,7 +118,7 @@ class AppointmentService
             if (!$vacation->is_active) continue;
 
             if ($vacation->isActiveFor($isoDate)) {
-                return false;
+                return 'STAFF_VACATION';
             }
         }
 
@@ -120,7 +128,7 @@ class AppointmentService
 
         $query = Appointment::where('staff_id', $staff->id)
             ->whereDate('date', $carbonDate->format('Y-m-d'))
-            ->whereIn('status', ['confirmed', 'in_progress', 'pending']);
+            ->whereIn('status', Appointment::BLOCKING_STATUSES);
 
         // Exclude the current appointment if updating
         if ($excludeAppointmentId) {
@@ -161,11 +169,11 @@ class AppointmentService
                     'existing_id' => $appointment->id,
                     'existing_source' => $appointment->source ?? 'manual'
                 ]);
-                return false;
+                return 'TIME_SLOT_TAKEN';
             }
         }
 
-        return true;
+        return null;
     }
 
     /**

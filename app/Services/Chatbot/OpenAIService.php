@@ -127,6 +127,7 @@ class OpenAIService
 Ti si profesionalni asistent za salon "{$salon['name']}".
 
 TVOJA ULOGA:
+- Radi samo u opsegu zakazivanja termina, usluga, cijena, trajanja, osoblja, lokacije i radnog vremena salona
 - Analiziraj korisničku poruku i odredi namjeru (intent)
 - Izvuci relevantne podatke (entities)
 - Predloži sljedeći korak u razgovoru
@@ -146,6 +147,11 @@ ENTITIES (podaci za izvući):
 - staff: Ime frizera (ako spomenuto)
 - urgency: Da li je hitno
 
+OBAVEZNO IZVUCI I KONTAKT PODATKE AKO SU SPOMENUTI:
+- client_name: ime i prezime
+- client_phone: broj telefona
+- client_email: email
+
 OUTPUT FORMAT (JSON):
 {
   "intent": "booking|pricing|hours|location|cancellation|general",
@@ -154,7 +160,10 @@ OUTPUT FORMAT (JSON):
     "service": "string ili null",
     "date": "string ili null",
     "time": "string ili null",
-    "staff": "string ili null"
+    "staff": "string ili null",
+    "client_name": "string ili null",
+    "client_phone": "string ili null",
+    "client_email": "string ili null"
   },
   "next_action": "ask_service|ask_date|ask_time|provide_info|confirm_booking"
 }
@@ -170,12 +179,16 @@ PROMPT;
     {
         $conversationState = $context['conversation_state'] ?? 'new';
         $previousContext = json_encode($context['previous_context'] ?? [], JSON_UNESCAPED_UNICODE);
+        $services = json_encode($context['services'] ?? [], JSON_UNESCAPED_UNICODE);
+        $staff = json_encode($context['staff'] ?? [], JSON_UNESCAPED_UNICODE);
 
         return <<<PROMPT
 PORUKA KORISNIKA: "{$message}"
 
 TRENUTNO STANJE RAZGOVORA: {$conversationState}
 PRETHODNI KONTEKST: {$previousContext}
+DOSTUPNE USLUGE: {$services}
+DOSTUPNI FRIZERI/OSOBLJE: {$staff}
 
 Analiziraj poruku i vrati JSON sa intent, confidence, entities i next_action.
 PROMPT;
@@ -210,6 +223,18 @@ PROMPT;
 
     private function buildResponsePrompt(string $action, array $data, array $context): string
     {
+        if ($action === 'ask_contact') {
+            return "Termin je skoro spreman. Trazi samo nedostajuce kontakt podatke: " . implode(', ', $data['missing'] ?? []);
+        }
+
+        if ($action === 'confirm_booking') {
+            return "Trazi finalnu potvrdu za rezervaciju: {$data['service']} dana {$data['date']} u {$data['time']}, klijent {$data['client_name']}, telefon {$data['client_phone']}. Ne trazi ime i telefon ponovo ako su vec dati.";
+        }
+
+        if ($action === 'booking_scope_only') {
+            return "Ljubazno reci da mozes pomoci samo oko zakazivanja termina, usluga, cijena, frizera, radnog vremena i lokacije salona.";
+        }
+
         // Different prompts based on action
         return match($action) {
             'greet' => "Pozdrav novi korisnik. Predstavi salon i pitaj kako možeš pomoći.",
@@ -226,6 +251,26 @@ PROMPT;
 
     private function getFallbackResponse(string $action): string
     {
+        if ($action === 'ask_date') {
+            return 'Koji datum vam odgovara za termin?';
+        }
+
+        if ($action === 'ask_time') {
+            return 'Koje vrijeme vam odgovara?';
+        }
+
+        if ($action === 'ask_contact') {
+            return 'Molim vas posaljite ime i broj telefona za rezervaciju.';
+        }
+
+        if ($action === 'confirm_booking') {
+            return 'Da li potvrdjujete ovaj termin?';
+        }
+
+        if ($action === 'booking_scope_only') {
+            return 'Mogu pomoci samo oko zakazivanja termina, usluga, cijena, frizera, radnog vremena i lokacije salona.';
+        }
+
         return match($action) {
             'greet' => "Zdravo! Dobrodošli u naš salon. Kako vam mogu pomoći?",
             'ask_service' => "Koju uslugu želite zakazati?",

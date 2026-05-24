@@ -55,6 +55,7 @@ class Salon extends Model
         'category_order',
         'email_notifications_enabled',
         'chatbot_enabled',
+        'social_integrations_enabled',
     ];
 
     /**
@@ -75,6 +76,7 @@ class Salon extends Model
         'auto_confirm' => 'boolean',
         'email_notifications_enabled' => 'boolean',
         'chatbot_enabled' => 'boolean',
+        'social_integrations_enabled' => 'boolean',
         'rating' => 'float',
         'review_count' => 'integer',
         'latitude' => 'float',

@@ -19,9 +19,23 @@ class MetaService
     /**
      * Send message to user via Meta Graph API
      */
-    public function sendMessage(string $recipientPsid, string $messageText, string $accessToken): array
+    public function sendMessage(
+        string $recipientPsid,
+        string $messageText,
+        string $accessToken,
+        string $connectionMode = 'facebook_page',
+        ?string $senderAccountId = null
+    ): array
     {
         $url = "{$this->graphApiUrl}/me/messages";
+
+        if ($connectionMode === 'instagram_only' && filled(config('chatbot.meta.instagram_only.send_url'))) {
+            $url = str_replace(
+                ['{ig_account_id}', '{sender_account_id}'],
+                [(string) $senderAccountId, (string) $senderAccountId],
+                (string) config('chatbot.meta.instagram_only.send_url')
+            );
+        }
 
         try {
             $response = Http::timeout(10)
@@ -115,6 +129,51 @@ class MetaService
         }
 
         throw new \Exception('Failed to get page info: ' . $response->body());
+    }
+
+    public function debugToken(string $accessToken): array
+    {
+        $url = "{$this->graphApiUrl}/debug_token";
+
+        $response = Http::timeout(10)->get($url, [
+            'input_token' => $accessToken,
+            'access_token' => config('chatbot.meta.app_id') . '|' . config('chatbot.meta.app_secret'),
+        ]);
+
+        if (!$response->successful()) {
+            return [
+                'success' => false,
+                'error' => $response->json('error.message', 'Failed to debug token'),
+                'status' => $response->status(),
+            ];
+        }
+
+        return [
+            'success' => true,
+            'data' => $response->json('data', []),
+        ];
+    }
+
+    public function getSubscribedApps(string $pageId, string $accessToken): array
+    {
+        $url = "{$this->graphApiUrl}/{$pageId}/subscribed_apps";
+
+        $response = Http::timeout(10)->withToken($accessToken)->get($url, [
+            'fields' => 'id,name,subscribed_fields',
+        ]);
+
+        if (!$response->successful()) {
+            return [
+                'success' => false,
+                'error' => $response->json('error.message', 'Failed to get subscribed apps'),
+                'status' => $response->status(),
+            ];
+        }
+
+        return [
+            'success' => true,
+            'data' => $response->json('data', []),
+        ];
     }
 
     /**

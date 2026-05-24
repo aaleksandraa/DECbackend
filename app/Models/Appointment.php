@@ -14,6 +14,8 @@ class Appointment extends Model
 {
     use HasFactory, SoftDeletes;
 
+    public const BLOCKING_STATUSES = ['pending', 'confirmed', 'in_progress'];
+
     public const REVENUE_BASE_STATUSES = ['pending', 'confirmed', 'in_progress'];
 
     /**
@@ -38,6 +40,8 @@ class Appointment extends Model
         'status',
         'notes',
         'booking_source',
+        'idempotency_key',
+        'review_request_sent_at',
         'total_price',
         'payment_status',
         'source',
@@ -54,6 +58,7 @@ class Appointment extends Model
         'total_price' => 'float',
         'is_guest' => 'boolean', // Keep cast for reading from database
         'service_ids' => 'array', // Cast JSON to array
+        'review_request_sent_at' => 'datetime',
     ];
 
     /**

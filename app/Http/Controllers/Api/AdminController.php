@@ -121,6 +121,13 @@ class AdminController extends Controller
             $query->where('status', $request->status);
         }
 
+        if ($request->has('social_integrations_enabled')) {
+            $query->where('social_integrations_enabled', filter_var(
+                $request->social_integrations_enabled,
+                FILTER_VALIDATE_BOOLEAN
+            ));
+        }
+
         // Search by name, city, or owner
         if ($request->has('search')) {
             $query->where(function ($q) use ($request) {
@@ -400,7 +407,13 @@ class AdminController extends Controller
             'phone' => 'sometimes|string|max:255',
             'email' => 'sometimes|string|email|max:255',
             'status' => 'sometimes|string|in:pending,approved,suspended',
+            'social_integrations_enabled' => 'sometimes|boolean',
+            'chatbot_enabled' => 'sometimes|boolean',
         ]);
+
+        if (array_key_exists('social_integrations_enabled', $validated) && !$validated['social_integrations_enabled']) {
+            $validated['chatbot_enabled'] = false;
+        }
 
         $salon->update($validated);
 

@@ -7,6 +7,8 @@ use App\Models\ChatbotMessage;
 use App\Models\Salon;
 use App\Models\Service;
 use App\Models\Appointment;
+use App\Models\Staff;
+use App\Services\AppointmentService;
 use App\Services\BookingService;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
@@ -17,6 +19,7 @@ class ConversationService
     public function __construct(
         private OpenAIService $openAI,
         private BookingService $booking,
+        private AppointmentService $appointmentService,
     ) {}
 
     /**
@@ -119,11 +122,7 @@ class ConversationService
         // 4. Analyze message with AI (OUTSIDE transaction - can take 1-3s)
         $analysis = $this->openAI->analyzeMessage($messageText, $context);
 
-        // 5. Determine action and get data
-        $action = $this->determineAction($conversation, $analysis);
-        $actionData = $this->getActionData($conversation, $action, $salon);
-
-        // 6. Check if human takeover is needed
+        // 5. Check if human takeover is needed
         if ($this->shouldRequireHuman($analysis, $conversation, $messageText)) {
             $conversation->update(['requires_human' => true]);
             Log::info('Human takeover triggered', [
@@ -143,12 +142,8 @@ class ConversationService
             ];
         }
 
-        // 7. Generate response with AI (OUTSIDE transaction - can take 1-3s)
-        $responseText = $this->openAI->generateResponse($context, $action, $actionData);
-
-        // 8. Update database (FAST transaction for writes only)
-        DB::transaction(function () use ($conversation, $inboundMessage, $analysis, $responseText, $action) {
-            // Update inbound message with AI analysis
+        // 6. Persist the inbound AI analysis and refresh context before choosing the next step.
+        DB::transaction(function () use ($conversation, $inboundMessage, $analysis) {
             $inboundMessage->update([
                 'ai_processed' => true,
                 'ai_intent' => $analysis['intent'],
@@ -157,9 +152,21 @@ class ConversationService
                 'ai_processing_time_ms' => $analysis['processing_time_ms'],
             ]);
 
-            // Update conversation state and context
             $this->updateConversationFromAnalysis($conversation, $analysis);
+        });
 
+        $conversation->refresh();
+        $context = $this->buildContext($conversation, $salon);
+
+        // 7. Determine action using the updated conversation state/context.
+        $action = $this->determineAction($conversation, $analysis);
+        $actionData = $this->getActionData($conversation, $action, $salon);
+
+        // 8. Generate response with AI (OUTSIDE transaction - can take 1-3s)
+        $responseText = $this->openAI->generateResponse($context, $action, $actionData);
+
+        // 9. Store outbound message and metrics.
+        DB::transaction(function () use ($conversation, $responseText, $action) {
             // Store outbound message
             $this->storeOutboundMessage($conversation, $responseText, $action);
 
@@ -262,6 +269,36 @@ class ConversationService
             ])
             ->toArray();
 
+        $services = $salon->services()
+            ->where('is_active', true)
+            ->orderBy('display_order')
+            ->orderBy('name')
+            ->get(['id', 'name', 'price', 'discount_price', 'duration', 'category'])
+            ->map(fn($service) => [
+                'id' => $service->id,
+                'name' => $service->name,
+                'price' => $service->discount_price ?? $service->price,
+                'duration' => $service->duration,
+                'category' => $service->category,
+            ])
+            ->values()
+            ->toArray();
+
+        $staff = $salon->staff()
+            ->whereRaw('is_active = true')
+            ->orderBy('display_order')
+            ->orderBy('name')
+            ->with('services:id,name')
+            ->get(['id', 'salon_id', 'name', 'role'])
+            ->map(fn($staffMember) => [
+                'id' => $staffMember->id,
+                'name' => $staffMember->name,
+                'role' => $staffMember->role,
+                'services' => $staffMember->services->pluck('name')->values()->toArray(),
+            ])
+            ->values()
+            ->toArray();
+
         return [
             'salon' => [
                 'name' => $salon->name,
@@ -269,6 +306,8 @@ class ConversationService
                 'phone' => $salon->phone,
                 'city' => $salon->city,
             ],
+            'services' => $services,
+            'staff' => $staff,
             'conversation_state' => $conversation->state,
             'previous_context' => $conversation->context ?? [],
             'recent_messages' => $recentMessages,
@@ -283,13 +322,16 @@ class ConversationService
             'confidence' => $analysis['confidence'],
         ];
 
+        $entities = $this->sanitizeEntities($analysis['entities'] ?? []);
+
         // Update context with extracted entities
-        if (!empty($analysis['entities'])) {
-            $conversation->updateContext($analysis['entities']);
+        if (!empty($entities)) {
+            $conversation->updateContext($entities);
+            $conversation->refresh();
         }
 
         // State transitions based on intent and current state
-        $newState = $this->determineNewState($conversation->state, $analysis);
+        $newState = $this->determineNewState($conversation, $analysis);
         if ($newState !== $conversation->state) {
             $updates['state'] = $newState;
         }
@@ -302,71 +344,128 @@ class ConversationService
         $conversation->update($updates);
     }
 
-    private function determineNewState(string $currentState, array $analysis): string
+    private function sanitizeEntities(array $entities): array
+    {
+        return collect($entities)
+            ->filter(fn($value) => $value !== null && $value !== '')
+            ->only([
+                'service',
+                'date',
+                'time',
+                'staff',
+                'client_name',
+                'client_phone',
+                'client_email',
+            ])
+            ->toArray();
+    }
+
+    private function determineNewState(ChatbotConversation $conversation, array $analysis): string
     {
         $intent = $analysis['intent'];
-        $entities = $analysis['entities'];
+        $currentState = $conversation->state;
 
-        // State machine logic
-        return match([$currentState, $intent]) {
-            ['new', 'booking'] => 'collecting_service',
-            ['new', _] => 'greeting',
+        if (in_array($intent, ['pricing', 'hours', 'location'], true)) {
+            return ChatbotConversation::STATE_GREETING;
+        }
 
-            ['greeting', 'booking'] => 'collecting_service',
-            ['collecting_service', 'booking'] => isset($entities['service']) ? 'collecting_datetime' : 'collecting_service',
-            ['collecting_datetime', 'booking'] => isset($entities['date']) ? 'collecting_contact' : 'collecting_datetime',
-            ['collecting_contact', 'booking'] => 'confirming',
-            
-            [_, 'pricing'] => 'greeting', // Answer and return to greeting
-            [_, 'hours'] => 'greeting',
-            [_, 'location'] => 'greeting',
+        if (!in_array($intent, ['booking', 'general'], true)) {
+            return $currentState === ChatbotConversation::STATE_NEW
+                ? ChatbotConversation::STATE_GREETING
+                : $currentState;
+        }
 
-            default => $currentState,
-        };
+        if (!$conversation->getContextValue('service')) {
+            return ChatbotConversation::STATE_COLLECTING_SERVICE;
+        }
+
+        if (!$conversation->getContextValue('date') || !$conversation->getContextValue('time')) {
+            return ChatbotConversation::STATE_COLLECTING_DATETIME;
+        }
+
+        if (!$conversation->getContextValue('client_name') || !$conversation->getContextValue('client_phone')) {
+            return ChatbotConversation::STATE_COLLECTING_CONTACT;
+        }
+
+        return ChatbotConversation::STATE_CONFIRMING;
     }
 
     private function determineAction(ChatbotConversation $conversation, array $analysis): string
     {
-        $state = $conversation->state;
         $intent = $analysis['intent'];
 
-        return match($state) {
-            'new' => 'greet',
-            'greeting' => match($intent) {
-                'booking' => 'ask_service',
-                'pricing' => 'provide_pricing',
-                'hours' => 'provide_hours',
-                'location' => 'provide_location',
-                default => 'greet',
-            },
-            'collecting_service' => 'ask_service',
-            'collecting_datetime' => $conversation->getContextValue('date') ? 'ask_time' : 'ask_date',
-            'collecting_contact' => 'ask_contact',
-            'confirming' => 'confirm_booking',
-            'booked' => 'booking_success',
-            default => 'general_response',
-        };
+        if ($intent === 'pricing') {
+            return 'provide_pricing';
+        }
+
+        if ($intent === 'hours') {
+            return 'provide_hours';
+        }
+
+        if ($intent === 'location') {
+            return 'provide_location';
+        }
+
+        if (!$conversation->getContextValue('service')) {
+            return 'ask_service';
+        }
+
+        if (!$conversation->getContextValue('date')) {
+            return 'ask_date';
+        }
+
+        if (!$conversation->getContextValue('time')) {
+            return 'ask_time';
+        }
+
+        if (!$conversation->getContextValue('client_name') || !$conversation->getContextValue('client_phone')) {
+            return 'ask_contact';
+        }
+
+        if ($conversation->state === ChatbotConversation::STATE_BOOKED) {
+            return 'booking_success';
+        }
+
+        if ($intent === 'booking' || $conversation->intent === ChatbotConversation::INTENT_BOOKING) {
+            return 'confirm_booking';
+        }
+
+        return 'booking_scope_only';
     }
 
     private function getActionData(ChatbotConversation $conversation, string $action, Salon $salon): array
     {
         return match($action) {
             'ask_service' => [
-                'services' => $salon->services()->where('is_active', true)->pluck('name')->toArray(),
+                'services' => $this->getFormattedServiceSummaries($salon),
+                'staff' => $this->getStaffSummaries($salon),
+            ],
+
+            'ask_date' => [
+                'service' => $conversation->getContextValue('service'),
+                'staff' => $conversation->getContextValue('staff'),
             ],
 
             'ask_time' => [
                 'date' => $conversation->getContextValue('date'),
                 'service' => $conversation->getContextValue('service'),
+                'staff' => $conversation->getContextValue('staff'),
                 'available_slots' => $this->getAvailableSlots($conversation, $salon),
             ],
 
+            'ask_contact' => [
+                'service' => $conversation->getContextValue('service'),
+                'date' => $conversation->getContextValue('date'),
+                'time' => $conversation->getContextValue('time'),
+                'missing' => $this->getMissingContactFields($conversation),
+            ],
+
             'provide_pricing' => [
-                'pricing' => $salon->services()->where('is_active', true)->get(['name', 'price', 'duration'])->toArray(),
+                'pricing' => $this->getServiceSummaries($salon),
             ],
 
             'provide_hours' => [
-                'hours' => $this->getSalonHours($salon),
+                'hours' => $this->getConfiguredSalonHours($salon),
             ],
 
             'provide_location' => [
@@ -379,10 +478,69 @@ class ConversationService
                 'service' => $conversation->getContextValue('service'),
                 'date' => $conversation->getContextValue('date'),
                 'time' => $conversation->getContextValue('time'),
+                'staff' => $conversation->getContextValue('staff'),
+                'client_name' => $conversation->getContextValue('client_name'),
+                'client_phone' => $conversation->getContextValue('client_phone'),
             ],
 
             default => [],
         };
+    }
+
+    private function getServiceSummaries(Salon $salon): array
+    {
+        return $salon->services()
+            ->where('is_active', true)
+            ->orderBy('display_order')
+            ->orderBy('name')
+            ->get(['name', 'price', 'discount_price', 'duration'])
+            ->map(fn($service) => [
+                'name' => $service->name,
+                'price' => $service->discount_price ?? $service->price,
+                'duration' => $service->duration,
+            ])
+            ->values()
+            ->toArray();
+    }
+
+    private function getFormattedServiceSummaries(Salon $salon): array
+    {
+        return collect($this->getServiceSummaries($salon))
+            ->map(function (array $service) {
+                $price = isset($service['price']) ? number_format((float) $service['price'], 2, '.', '') . ' KM' : 'cijena nije unesena';
+                $duration = isset($service['duration']) ? (int) $service['duration'] . ' min' : 'trajanje nije uneseno';
+
+                return "{$service['name']} ({$price}, {$duration})";
+            })
+            ->values()
+            ->toArray();
+    }
+
+    private function getStaffSummaries(Salon $salon): array
+    {
+        return $salon->staff()
+            ->whereRaw('is_active = true')
+            ->orderBy('display_order')
+            ->orderBy('name')
+            ->get(['name', 'role'])
+            ->map(fn($staffMember) => trim($staffMember->name . ($staffMember->role ? ' - ' . $staffMember->role : '')))
+            ->values()
+            ->toArray();
+    }
+
+    private function getMissingContactFields(ChatbotConversation $conversation): array
+    {
+        $missing = [];
+
+        if (!$conversation->getContextValue('client_name')) {
+            $missing[] = 'ime i prezime';
+        }
+
+        if (!$conversation->getContextValue('client_phone')) {
+            $missing[] = 'telefon';
+        }
+
+        return $missing;
     }
 
     private function getAvailableSlots(ChatbotConversation $conversation, Salon $salon): array
@@ -395,6 +553,24 @@ class ConversationService
         }
 
         try {
+            $staffId = $this->resolveStaffId($conversation->getContextValue('staff'), $salon);
+            if ($staffId) {
+                $staff = Staff::where('id', $staffId)
+                    ->where('salon_id', $salon->id)
+                    ->whereRaw('is_active = true')
+                    ->whereHas('services', fn($query) => $query->where('services.id', $serviceId))
+                    ->with(['breaks', 'vacations', 'salon.salonBreaks', 'salon.salonVacations'])
+                    ->first();
+
+                $service = $salon->services()->where('is_active', true)->find($serviceId);
+
+                if (!$staff || !$service) {
+                    return [];
+                }
+
+                return $this->appointmentService->getAvailableSlots($staff, $date, (int) $service->duration);
+            }
+
             // Use existing BookingService availability logic
             $availability = $this->booking->getAvailability($salon->id, $serviceId, $date);
 
@@ -452,6 +628,54 @@ class ConversationService
         return $service?->id;
     }
 
+    private function getConfiguredSalonHours(Salon $salon): array
+    {
+        $hours = [];
+
+        $daysMap = [
+            'monday' => 'Ponedjeljak',
+            'tuesday' => 'Utorak',
+            'wednesday' => 'Srijeda',
+            'thursday' => 'Cetvrtak',
+            'friday' => 'Petak',
+            'saturday' => 'Subota',
+            'sunday' => 'Nedjelja',
+        ];
+
+        foreach ($daysMap as $dayKey => $dayName) {
+            $dayHours = is_array($salon->working_hours) ? ($salon->working_hours[$dayKey] ?? null) : null;
+            $isOpen = is_array($dayHours) && (bool) ($dayHours['is_open'] ?? $dayHours['is_working'] ?? false);
+
+            $hours[] = [
+                'day' => $dayName,
+                'open' => $isOpen ? ($dayHours['open'] ?? $dayHours['start'] ?? null) : null,
+                'close' => $isOpen ? ($dayHours['close'] ?? $dayHours['end'] ?? null) : null,
+                'is_open' => $isOpen,
+            ];
+        }
+
+        return $hours;
+    }
+
+    private function resolveStaffId(?string $staffName, Salon $salon): ?int
+    {
+        if (!$staffName) {
+            return null;
+        }
+
+        $normalizedStaffName = mb_strtolower($staffName);
+
+        $staff = $salon->staff()
+            ->whereRaw('is_active = true')
+            ->where(function ($query) use ($normalizedStaffName) {
+                $query->whereRaw('LOWER(name) LIKE ?', ['%' . $normalizedStaffName . '%'])
+                    ->orWhereRaw('LOWER(role) LIKE ?', ['%' . $normalizedStaffName . '%']);
+            })
+            ->first();
+
+        return $staff?->id;
+    }
+
     private function normalizeDate(?string $dateStr): ?string
     {
         if (!$dateStr) return null;
@@ -506,7 +730,7 @@ class ConversationService
         }
 
         // User explicitly asks for human
-        $humanKeywords = ['čovjek', 'osoba', 'zaposleni', 'agent', 'pomoć', 'razgovarati', 'kontakt'];
+        $humanKeywords = ['covjek', 'čovjek', 'osoba', 'zaposleni', 'agent', 'pomoc', 'pomoć', 'razgovarati', 'kontakt'];
         $lowerMessage = mb_strtolower($messageText);
 
         foreach ($humanKeywords as $keyword) {
@@ -529,7 +753,7 @@ class ConversationService
     {
         $text = mb_strtolower(trim($text));
 
-        $confirmations = ['da', 'yes', 'potvrđujem', 'potvrdi', 'ok', 'u redu', 'važi', 'ajde'];
+        $confirmations = ['da', 'yes', 'potvrdjujem', 'potvrdujem', 'potvrđujem', 'potvrdi', 'ok', 'u redu', 'vazi', 'važi', 'ajde'];
 
         foreach ($confirmations as $word) {
             if (str_contains($text, $word)) {
@@ -551,6 +775,7 @@ class ConversationService
         $serviceId = $this->resolveServiceId($conversation->getContextValue('service'), $salon);
         $date = $this->normalizeDate($conversation->getContextValue('date'));
         $time = $conversation->getContextValue('time');
+        $staffId = $this->resolveStaffId($conversation->getContextValue('staff'), $salon);
         $clientName = $conversation->getContextValue('client_name');
         $clientPhone = $conversation->getContextValue('client_phone');
 
@@ -569,8 +794,13 @@ class ConversationService
             'client_phone' => $clientPhone,
             'client_email' => $conversation->getContextValue('client_email'),
             'booking_source' => 'chatbot', // Track source
+            'idempotency_key' => 'chatbot:conversation:'.$conversation->id,
             'notes' => 'Rezervacija preko Instagram/Facebook chatbota',
         ];
+
+        if ($staffId) {
+            $bookingData['staff_id'] = $staffId;
+        }
 
         // Call existing booking service
         $appointment = $this->booking->createPublicBooking($bookingData);

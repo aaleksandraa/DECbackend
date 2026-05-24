@@ -307,7 +307,7 @@ class Staff extends Model
 
         $existingAppointments = $this->appointments()
             ->whereDate('date', $carbonDate->format('Y-m-d'))
-            ->whereIn('status', ['pending', 'confirmed', 'in_progress'])
+            ->whereIn('status', Appointment::BLOCKING_STATUSES)
             ->get();
 
         // Only log when appointments are found to avoid spam

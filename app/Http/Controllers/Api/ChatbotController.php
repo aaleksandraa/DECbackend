@@ -276,7 +276,9 @@ class ChatbotController extends Controller
         $sendResult = $this->metaService->sendMessage(
             (string) $event['sender_psid'],
             $responseText,
-            (string) $integration->access_token
+            (string) $integration->access_token,
+            (string) ($integration->connection_mode ?? SocialIntegration::CONNECTION_MODE_FACEBOOK_PAGE),
+            $integration->ig_business_account_id
         );
 
         $conversationId = isset($result['conversation_id']) ? (int) $result['conversation_id'] : null;
@@ -502,4 +504,3 @@ class ChatbotController extends Controller
         return hash_equals($expectedSignature, $signature);
     }
 }
-

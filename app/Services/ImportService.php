@@ -4,7 +4,6 @@ namespace App\Services;
 
 use App\Models\User;
 use App\Models\Service;
-use App\Models\Appointment;
 use Carbon\Carbon;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\DB;
@@ -13,6 +12,10 @@ use PhpOffice\PhpSpreadsheet\IOFactory;
 
 class ImportService
 {
+    public function __construct(
+        private BookingService $bookingService,
+    ) {}
+
     /**
      * Parse file based on format.
      */
@@ -418,9 +421,6 @@ class ImportService
             // Normalize time to HH:MM format (strip seconds if present)
             $normalizedTime = $this->normalizeTime($row['time']);
 
-            // Calculate end time
-            $endTime = $this->calculateEndTime($normalizedTime, $row['duration']);
-
             // Combine notes
             $notes = trim(($row['notes'] ?? '') . ($additionalNotes ? "\n" . $additionalNotes : ''));
 
@@ -435,8 +435,11 @@ class ImportService
                 'service_name' => $row['services'] ?? 'N/A'
             ]);
 
-            // Create appointment
-            $appointment = Appointment::create([
+            if (!$serviceId) {
+                throw new \RuntimeException('Service could not be mapped for this import row');
+            }
+
+            $appointment = $this->bookingService->createAppointment([
                 'salon_id' => $salonId,
                 'staff_id' => $staffId,
                 'service_id' => $serviceId,
@@ -446,12 +449,31 @@ class ImportService
                 'client_phone' => $clientPhone,
                 'date' => $normalizedDate,
                 'time' => $normalizedTime,
-                'end_time' => $endTime,
-                'status' => 'confirmed',
                 'notes' => $notes ?: null,
-                'total_price' => $totalPrice,
+                'source' => 'import',
+                'booking_source' => 'import',
+                'import_batch_id' => $importBatchId,
+                'idempotency_key' => $this->buildImportIdempotencyKey(
+                    $importBatchId,
+                    $salonId,
+                    $staffId,
+                    $normalizedDate,
+                    $normalizedTime,
+                    (string) $row['name'],
+                    $clientPhone,
+                    $serviceId
+                ),
+            ], [
+                'booking_source' => 'import',
+                'is_guest' => true,
+                'create_guest_user' => false,
+                'allow_past' => true,
+                'initial_status' => 'confirmed',
                 'source' => 'import',
                 'import_batch_id' => $importBatchId,
+                'send_notifications' => false,
+                'send_email' => false,
+                'enforce_accepts_bookings' => false,
             ]);
 
             return [
@@ -469,6 +491,28 @@ class ImportService
                 'error' => $e->getMessage(),
             ];
         }
+    }
+
+    private function buildImportIdempotencyKey(
+        int $importBatchId,
+        int $salonId,
+        int $staffId,
+        string $date,
+        string $time,
+        string $name,
+        string $phone,
+        int $serviceId
+    ): string {
+        return 'import:'.hash('sha256', implode('|', [
+            $importBatchId,
+            $salonId,
+            $staffId,
+            $date,
+            $time,
+            mb_strtolower(trim($name)),
+            preg_replace('/\D/', '', $phone),
+            $serviceId,
+        ]));
     }
 
     /**

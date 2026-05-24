@@ -4,22 +4,21 @@ namespace App\Http\Controllers\Api;
 
 use App\Http\Controllers\Controller;
 use App\Http\Resources\SalonResource;
-use App\Mail\AppointmentConfirmationMail;
-use App\Models\Appointment;
+use App\Exceptions\BookingConflictException;
+use App\Exceptions\BookingUnavailableException;
 use App\Models\Location;
 use App\Models\Salon;
 use App\Models\Service;
 use App\Models\Staff;
 use App\Services\AppointmentService;
+use App\Services\BookingService;
 use App\Services\NotificationService;
 use Carbon\Carbon;
-use Illuminate\Database\QueryException;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Http\Resources\Json\AnonymousResourceCollection;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
-use Illuminate\Support\Facades\Mail;
 use Illuminate\Support\Facades\Validator;
 use Illuminate\Support\Str;
 
@@ -27,12 +26,15 @@ class PublicController extends Controller
 {
     protected AppointmentService $appointmentService;
     protected NotificationService $notificationService;
+    protected BookingService $bookingService;
 
     public function __construct(
         AppointmentService $appointmentService,
+        BookingService $bookingService,
         NotificationService $notificationService
     ) {
         $this->appointmentService = $appointmentService;
+        $this->bookingService = $bookingService;
         $this->notificationService = $notificationService;
     }
 
@@ -528,7 +530,9 @@ class PublicController extends Controller
         $validator = Validator::make($request->all(), [
             'salon_id' => 'required|exists:salons,id',
             'staff_id' => 'required|exists:staff,id',
-            'service_id' => 'required|exists:services,id',
+            'service_id' => 'required_without:services|exists:services,id',
+            'services' => 'required_without:service_id|array|min:1',
+            'services.*.id' => 'required_with:services|exists:services,id',
             'date' => ['required', 'regex:/^\d{2}\.\d{2}\.\d{4}$/'],
             'time' => 'required|date_format:H:i',
             'notes' => 'nullable|string|max:500',
@@ -555,132 +559,88 @@ class PublicController extends Controller
         }
 
         try {
-            return DB::transaction(function () use ($request) {
-                // Lock the staff row to prevent concurrent booking
-                $staff = Staff::where('id', $request->staff_id)
-                    ->with(['breaks', 'vacations', 'salon.salonBreaks', 'salon.salonVacations', 'services'])
-                    ->lockForUpdate()
-                    ->firstOrFail();
+            $appointment = $this->bookingService->createAppointment($request->all(), [
+                'booking_source' => 'public',
+                'is_guest' => true,
+                'create_guest_user' => true,
+                'idempotency_key' => $request->header('Idempotency-Key') ?: $request->input('idempotency_key'),
+            ]);
 
-                $service = Service::findOrFail($request->service_id);
-                $salon = Salon::findOrFail($request->salon_id);
+            $appointment->load(['salon', 'staff', 'service']);
+            $services = $appointment->services();
+            $service = $services->first() ?: $appointment->service;
 
-                // Check if the staff can perform this service
-                if (!$staff->services->contains($service->id)) {
-                    return response()->json([
-                        'message' => 'Odabrani frizer ne pruža ovu uslugu',
-                    ], 422);
-                }
-
-                // Check if the staff is available at the requested time
-                if (!$this->appointmentService->isStaffAvailable($staff, $request->date, $request->time, $service->duration)) {
-                    return response()->json([
-                        'message' => 'Odabrani termin nije dostupan',
-                    ], 422);
-                }
-
-                // Calculate end time
-                $endTime = $this->appointmentService->calculateEndTime($request->time, $service->duration);
-
-                // Determine initial status
-                $initialStatus = ($salon->auto_confirm || $staff->auto_confirm) ? 'confirmed' : 'pending';
-
-                // Use discount price if available
-                $finalPrice = $service->discount_price ?? $service->price;
-
-                // Convert European date format to ISO format for database
-                $dateForDb = Carbon::createFromFormat('d.m.Y', $request->date)->format('Y-m-d');
-
-                // Find or create guest user if email provided
-                $guestUser = null;
-                if (!empty($request->guest_email)) {
-                    $guestUser = $this->findOrCreateGuestUser([
-                        'name' => $request->guest_name,
-                        'email' => $request->guest_email,
-                        'phone' => $request->guest_phone,
-                    ]);
-                }
-
-                $appointment = Appointment::create([
-                    'client_id' => $guestUser?->id, // Link to guest user if email provided
-                    'client_name' => $request->guest_name,
-                    'client_email' => $request->guest_email,
-                    'client_phone' => $request->guest_phone,
-                    'is_guest' => true,
-                    'guest_address' => $request->guest_address,
-                    'salon_id' => $salon->id,
-                    'staff_id' => $staff->id,
-                    'service_id' => $service->id,
-                    'date' => $dateForDb,
-                    'time' => $request->time,
-                    'end_time' => $endTime,
-                    'status' => $initialStatus,
-                    'notes' => $request->notes,
-                    'total_price' => $finalPrice,
-                    'payment_status' => 'pending',
-                ]);
-
-                // Send notifications to salon/staff
-                $this->notificationService->sendNewAppointmentNotifications($appointment);
-
-                // Send confirmation email to guest
-                if ($request->guest_email) {
-                    Mail::to($request->guest_email)->send(new AppointmentConfirmationMail($appointment));
-                }
-
-                return response()->json([
-                    'message' => 'Termin uspješno zakazan!',
-                    'appointment' => [
-                        'id' => $appointment->id,
-                        'date' => Carbon::parse($appointment->date)->format('d.m.Y'),
-                        'time' => $appointment->time,
-                        'end_time' => $appointment->end_time,
-                        'status' => $appointment->status,
-                        'total_price' => $appointment->total_price,
-                        'client_email' => $appointment->client_email,
-                        // Nested objects for SuccessModal
-                        'salon' => [
-                            'id' => $salon->id,
-                            'name' => $salon->name,
-                            'address' => $salon->address,
-                            'city' => $salon->city,
-                        ],
-                        'staff' => [
-                            'id' => $staff->id,
-                            'name' => $staff->name,
-                            'role' => $staff->role,
-                        ],
-                        'service' => [
-                            'id' => $service->id,
-                            'name' => $service->name,
-                            'duration' => $service->duration,
-                            'price' => $service->price,
-                        ],
-                        // Also include flat structure for compatibility
-                        'service_name' => $service->name,
-                        'staff_name' => $staff->name,
+            return response()->json([
+                'message' => 'Termin uspjesno zakazan!',
+                'appointment' => [
+                    'id' => $appointment->id,
+                    'date' => Carbon::parse($appointment->date)->format('d.m.Y'),
+                    'time' => $appointment->time,
+                    'end_time' => $appointment->end_time,
+                    'status' => $appointment->status,
+                    'total_price' => $appointment->total_price,
+                    'client_email' => $appointment->client_email,
+                    'salon' => [
+                        'id' => $appointment->salon->id,
+                        'name' => $appointment->salon->name,
+                        'address' => $appointment->salon->address,
+                        'city' => $appointment->salon->city,
                     ],
-                    'confirmation_message' => $initialStatus === 'confirmed'
-                        ? 'Vaš termin je potvrđen. Vidimo se!'
-                        : 'Vaš termin čeka potvrdu salona. Obavijestit ćemo vas putem SMS-a ili email-a.',
-                ], 201);
-            });
-        } catch (QueryException $e) {
-            if ($e->getCode() === '23505' || str_contains($e->getMessage(), 'appointments_no_double_booking')) {
-                Log::warning('Double booking attempt prevented (guest)', [
-                    'guest_name' => $request->guest_name,
-                    'staff_id' => $request->staff_id,
-                    'date' => $request->date,
-                    'time' => $request->time,
-                ]);
+                    'staff' => [
+                        'id' => $appointment->staff->id,
+                        'name' => $appointment->staff->name,
+                        'role' => $appointment->staff->role,
+                    ],
+                    'service' => $service ? [
+                        'id' => $service->id,
+                        'name' => $service->name,
+                        'duration' => $service->duration,
+                        'price' => $service->price,
+                    ] : null,
+                    'services' => $services->map(fn ($item) => [
+                        'id' => $item->id,
+                        'name' => $item->name,
+                        'duration' => $item->duration,
+                        'price' => $item->price,
+                    ])->values()->all(),
+                    'service_name' => $services->pluck('name')->join(', ') ?: ($service?->name),
+                    'staff_name' => $appointment->staff->name,
+                ],
+                'confirmation_message' => $appointment->status === 'confirmed'
+                    ? 'Vas termin je potvrdjen. Vidimo se!'
+                    : 'Vas termin ceka potvrdu salona. Obavijestit cemo vas putem SMS-a ili email-a.',
+            ], 201);
+        } catch (BookingConflictException $e) {
+            Log::warning('Double booking attempt prevented (guest)', [
+                'guest_name' => $request->guest_name,
+                'staff_id' => $request->staff_id,
+                'date' => $request->date,
+                'time' => $request->time,
+            ]);
 
-                return response()->json([
-                    'message' => 'Ovaj termin je upravo zauzet. Molimo izaberite drugo vrijeme.',
-                ], 422);
-            }
+            return response()->json([
+                'message' => 'Ovaj termin je upravo zauzet. Molimo izaberite drugo vrijeme.',
+                'code' => $e->reasonCode(),
+                'reason_code' => $e->reasonCode(),
+            ], 409);
+        } catch (BookingUnavailableException $e) {
+            return response()->json([
+                'message' => $e->getMessage(),
+                'code' => $e->reasonCode(),
+                'reason_code' => $e->reasonCode(),
+                'redirect_to_time' => true,
+            ], 422);
+        } catch (\InvalidArgumentException|\RuntimeException $e) {
+            Log::warning('Public booking request rejected', [
+                'error' => $e->getMessage(),
+                'type' => get_class($e),
+            ]);
 
-            throw $e;
+            return response()->json([
+                'message' => $e->getMessage(),
+            ], 422);
         }
+
     }
 
     /**

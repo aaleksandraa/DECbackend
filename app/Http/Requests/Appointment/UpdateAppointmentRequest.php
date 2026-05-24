@@ -54,14 +54,22 @@ class UpdateAppointmentRequest extends BaseRequest
             ]);
         }
 
-        // Only client or admin can change these fields
-        if (in_array($this->user()->role, ['klijent', 'admin'])) {
+        // Reschedule rules:
+        // - clients may reschedule their own pending/confirmed appointments;
+        // - salon owners/admins may reschedule and reassign staff;
+        // - staff may reschedule appointments assigned to them, but not transfer to another staff member.
+        if (in_array($this->user()->role, ['klijent', 'salon', 'frizer', 'admin'])) {
             $rules = array_merge($rules, [
                 'date' => 'sometimes|date_format:d.m.Y|after_or_equal:today',
                 'time' => 'sometimes|date_format:H:i',
-                'staff_id' => 'sometimes|exists:staff,id',
                 'service_id' => 'sometimes|exists:services,id',
+                'services' => 'sometimes|array|min:1',
+                'services.*.id' => 'required_with:services|exists:services,id',
             ]);
+        }
+
+        if (in_array($this->user()->role, ['klijent', 'salon', 'admin'])) {
+            $rules['staff_id'] = 'sometimes|exists:staff,id';
         }
 
         return $rules;

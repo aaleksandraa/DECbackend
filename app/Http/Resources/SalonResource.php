@@ -43,6 +43,8 @@ class SalonResource extends JsonResource
             'show_service_gallery' => $this->show_service_gallery,
             'category_order' => $this->category_order,
             'status' => $this->status,
+            'chatbot_enabled' => (bool) $this->chatbot_enabled,
+            'social_integrations_enabled' => (bool) $this->social_integrations_enabled,
             'meta_title' => $this->meta_title,
             'meta_description' => $this->meta_description,
             'images' => $this->when($this->relationLoaded('images'), function () {

@@ -58,6 +58,23 @@ return [
         'oauth_redirect_uri' => env('META_OAUTH_REDIRECT_URI', null),
         'verify_webhook_signature' => env('META_VERIFY_WEBHOOK_SIGNATURE', true),
 
+        // Instagram-only OAuth is intentionally disabled by default because it
+        // depends on Meta app review and currently varies by approved product.
+        'instagram_only' => [
+            'enabled' => env('META_INSTAGRAM_ONLY_ENABLED', false),
+            'app_id' => env('META_INSTAGRAM_ONLY_APP_ID', env('META_APP_ID')),
+            'app_secret' => env('META_INSTAGRAM_ONLY_APP_SECRET', env('META_APP_SECRET')),
+            'auth_url' => env('META_INSTAGRAM_ONLY_AUTH_URL'),
+            'token_url' => env('META_INSTAGRAM_ONLY_TOKEN_URL'),
+            'profile_url' => env('META_INSTAGRAM_ONLY_PROFILE_URL'),
+            'send_url' => env('META_INSTAGRAM_ONLY_SEND_URL'),
+            'oauth_redirect_uri' => env('META_INSTAGRAM_ONLY_REDIRECT_URI', env('META_OAUTH_REDIRECT_URI')),
+            'scopes' => array_filter(explode(',', env(
+                'META_INSTAGRAM_ONLY_SCOPES',
+                'instagram_business_basic,instagram_business_manage_messages'
+            ))),
+        ],
+
         // Required scopes
         'required_scopes' => [
             'pages_show_list',

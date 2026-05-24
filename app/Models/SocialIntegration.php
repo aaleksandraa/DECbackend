@@ -44,10 +44,14 @@ class SocialIntegration extends Model
 {
     use SoftDeletes;
 
+    public const CONNECTION_MODE_FACEBOOK_PAGE = 'facebook_page';
+    public const CONNECTION_MODE_INSTAGRAM_ONLY = 'instagram_only';
+
     protected $fillable = [
         'salon_id',
         'provider',
         'platform',
+        'connection_mode',
         'fb_page_id',
         'fb_page_name',
         'ig_business_account_id',
@@ -241,6 +245,10 @@ class SocialIntegration extends Model
      */
     public function shouldAutoReply(): bool
     {
+        if (!$this->salon?->social_integrations_enabled || !$this->salon?->chatbot_enabled) {
+            return false;
+        }
+
         // Must be enabled
         if (!$this->auto_reply_enabled) {
             return false;
@@ -299,6 +307,10 @@ class SocialIntegration extends Model
      */
     public function getDisplayName(): string
     {
+        if ($this->isInstagramOnly()) {
+            return "@{$this->ig_username}";
+        }
+
         if ($this->platform === 'both') {
             return "{$this->fb_page_name} + @{$this->ig_username}";
         }
@@ -324,6 +336,11 @@ class SocialIntegration extends Model
     public function supportsFacebook(): bool
     {
         return in_array($this->platform, ['facebook', 'both']);
+    }
+
+    public function isInstagramOnly(): bool
+    {
+        return $this->connection_mode === self::CONNECTION_MODE_INSTAGRAM_ONLY;
     }
 
     /**

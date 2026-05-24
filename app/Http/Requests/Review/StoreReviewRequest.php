@@ -24,7 +24,7 @@ class StoreReviewRequest extends BaseRequest
         return [
             'appointment_id' => 'required|exists:appointments,id',
             'rating' => 'required|integer|min:1|max:5',
-            'comment' => 'required|string|max:1000',
+            'comment' => 'required|string|min:3|max:1000',
         ];
     }
 }

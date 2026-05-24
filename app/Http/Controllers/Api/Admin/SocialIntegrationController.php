@@ -19,6 +19,8 @@ class SocialIntegrationController extends Controller
 {
     private const PENDING_PAGE_SELECTION_KEY = 'pending_social_page_selection';
     private const PENDING_PAGE_SELECTION_TTL_SECONDS = 600;
+    private const MODE_FACEBOOK_PAGE = 'facebook_page';
+    private const MODE_INSTAGRAM_ONLY = 'instagram_only';
 
     public function __construct(private MetaService $metaService) {}
 
@@ -35,32 +37,50 @@ class SocialIntegrationController extends Controller
             return response()->json(['error' => 'No salon found'], 404);
         }
 
+        $baseData = [
+            'social_integrations_enabled' => (bool) $salon->social_integrations_enabled,
+            'chatbot_enabled' => (bool) $salon->chatbot_enabled,
+            'instagram_only_available' => $this->instagramOnlyAvailable(),
+            'connected' => false,
+            'integration' => null,
+        ];
+
         $integration = SocialIntegration::where('salon_id', $salon->id)
             ->where('provider', 'meta')
             ->where('status', 'active')
             ->first();
 
         if (!$integration) {
-            return response()->json(['error' => 'No integration found'], 404);
+            return response()->json([
+                'success' => true,
+                'data' => $baseData,
+            ]);
         }
 
         $stats = $integration->getStats(30);
+        $integrationData = [
+            'id' => $integration->id,
+            'platform' => $integration->platform,
+            'connection_mode' => $integration->connection_mode ?? SocialIntegration::CONNECTION_MODE_FACEBOOK_PAGE,
+            'fb_page_name' => $integration->fb_page_name,
+            'ig_username' => $integration->ig_username,
+            'status' => $integration->status,
+            'auto_reply_enabled' => $integration->auto_reply_enabled,
+            'business_hours_only' => $integration->business_hours_only,
+            'token_expires_at' => optional($integration->token_expires_at)?->toIso8601String(),
+            'webhook_verified' => (bool) $integration->webhook_verified,
+            'last_verified_at' => optional($integration->last_verified_at)?->toIso8601String(),
+            'connected_at' => $integration->created_at->toISOString(),
+            'stats' => $stats,
+            'health' => $this->buildIntegrationHealth($integration),
+        ];
 
         return response()->json([
             'success' => true,
-            'data' => [
-                'id' => $integration->id,
-                'platform' => $integration->platform,
-                'fb_page_name' => $integration->fb_page_name,
-                'ig_username' => $integration->ig_username,
-                'status' => $integration->status,
-                'auto_reply_enabled' => $integration->auto_reply_enabled,
-                'business_hours_only' => $integration->business_hours_only,
-                'token_expires_at' => optional($integration->token_expires_at)?->toIso8601String(),
-                'chatbot_enabled' => (bool) $salon->chatbot_enabled,
-                'connected_at' => $integration->created_at->toISOString(),
-                'stats' => $stats,
-            ],
+            'data' => array_merge($baseData, $integrationData, [
+                'connected' => true,
+                'integration' => $integrationData,
+            ]),
         ]);
     }
 
@@ -77,9 +97,15 @@ class SocialIntegrationController extends Controller
             return redirect($this->integrationRedirectUrl('error_no_salon'));
         }
 
+        if (!$salon->social_integrations_enabled) {
+            return redirect($this->integrationRedirectUrl('premium_required'));
+        }
+
+        $mode = $this->normalizeConnectionMode($request->query('mode'));
+
         $appId = config('chatbot.meta.app_id');
         $appSecret = config('chatbot.meta.app_secret');
-        if (!$appId || !$appSecret) {
+        if ($mode === self::MODE_FACEBOOK_PAGE && (!$appId || !$appSecret)) {
             Log::error('Meta integration config missing', [
                 'has_app_id' => !empty($appId),
                 'has_app_secret' => !empty($appSecret),
@@ -93,9 +119,14 @@ class SocialIntegrationController extends Controller
             'salon_id' => $salon->id,
             'user_id' => $user->id,
             'timestamp' => now()->timestamp,
+            'mode' => $mode,
         ]));
 
         Session::put('oauth_state', $state);
+
+        if ($mode === self::MODE_INSTAGRAM_ONLY) {
+            return $this->redirectToInstagramOnlyOAuth($state, $salon->id);
+        }
 
         $redirectUri = config('chatbot.meta.oauth_redirect_uri')
             ?: url('/api/v1/admin/social-integrations/callback');
@@ -178,7 +209,28 @@ class SocialIntegrationController extends Controller
             return redirect($this->integrationRedirectUrl('error_no_salon'));
         }
 
+        if (!$salon->social_integrations_enabled) {
+            return redirect($this->integrationRedirectUrl('premium_required'));
+        }
+
+        $mode = $this->normalizeConnectionMode($stateData['mode'] ?? self::MODE_FACEBOOK_PAGE);
+
         try {
+            if ($mode === self::MODE_INSTAGRAM_ONLY) {
+                $integration = $this->finalizeInstagramOnlyIntegration(
+                    $salon,
+                    (int) $stateData['user_id'],
+                    $code
+                );
+
+                Log::info('Instagram-only social integration created', [
+                    'salon_id' => $salon->id,
+                    'integration_id' => $integration->id,
+                ]);
+
+                return redirect($this->integrationRedirectUrl('connected_instagram_only'));
+            }
+
             $tokenData = $this->exchangeCodeForToken($code);
             if (empty($tokenData['access_token'])) {
                 throw new \Exception('Meta did not return access token.');
@@ -249,6 +301,10 @@ class SocialIntegrationController extends Controller
                 'trace' => $e->getTraceAsString(),
             ]);
 
+            if (str_contains($e->getMessage(), 'Instagram Business account')) {
+                return redirect($this->integrationRedirectUrl('error_no_instagram_business'));
+            }
+
             return redirect($this->integrationRedirectUrl('error_callback'));
         }
     }
@@ -264,6 +320,14 @@ class SocialIntegrationController extends Controller
 
         if (!$salon) {
             return response()->json(['error' => 'No salon found'], 404);
+        }
+
+        if (!$salon->social_integrations_enabled) {
+            return response()->json([
+                'success' => true,
+                'data' => null,
+                'reason' => 'premium_required',
+            ]);
         }
 
         $pending = $this->getPendingPageSelection((int) $salon->id, (int) $user->id);
@@ -309,6 +373,12 @@ class SocialIntegrationController extends Controller
             return response()->json(['error' => 'No salon found'], 404);
         }
 
+        if (!$salon->social_integrations_enabled) {
+            return response()->json([
+                'error' => 'Premium AI DM integration is not enabled for this salon.',
+            ], 403);
+        }
+
         $pending = $this->getPendingPageSelection((int) $salon->id, (int) $user->id);
         if (!$pending) {
             return response()->json([
@@ -347,6 +417,7 @@ class SocialIntegrationController extends Controller
                 'data' => [
                     'id' => $integration->id,
                     'platform' => $integration->platform,
+                    'connection_mode' => $integration->connection_mode,
                     'fb_page_name' => $integration->fb_page_name,
                     'ig_username' => $integration->ig_username,
                 ],
@@ -357,6 +428,13 @@ class SocialIntegrationController extends Controller
                 'page_id' => $validated['page_id'],
                 'error' => $e->getMessage(),
             ]);
+
+            if (str_contains($e->getMessage(), 'Instagram Business account')) {
+                return response()->json([
+                    'error' => 'Selected Facebook page does not have a connected Instagram Business account.',
+                    'code' => 'error_no_instagram_business',
+                ], 422);
+            }
 
             return response()->json([
                 'error' => 'Failed to connect selected Facebook page.',
@@ -372,7 +450,7 @@ class SocialIntegrationController extends Controller
     {
         $integrations = SocialIntegration::query()
             ->where('provider', 'meta')
-            ->with(['salon:id,name,city'])
+            ->with(['salon:id,name,city,social_integrations_enabled,chatbot_enabled'])
             ->orderByDesc('id')
             ->get()
             ->groupBy('salon_id')
@@ -437,8 +515,11 @@ class SocialIntegrationController extends Controller
                 'integration_id' => $integration->id,
                 'integration_status' => $integration->status,
                 'platform' => $integration->platform,
+                'connection_mode' => $integration->connection_mode ?? SocialIntegration::CONNECTION_MODE_FACEBOOK_PAGE,
                 'fb_page_name' => $integration->fb_page_name,
                 'ig_username' => $integration->ig_username,
+                'social_integrations_enabled' => (bool) $integration->salon?->social_integrations_enabled,
+                'chatbot_enabled' => (bool) $integration->salon?->chatbot_enabled,
                 'token_expires_at' => optional($integration->token_expires_at)?->toIso8601String(),
                 'token_status' => $tokenStatus,
                 'days_until_expiry' => $daysUntilExpiry,
@@ -485,6 +566,12 @@ class SocialIntegrationController extends Controller
             return response()->json(['error' => 'Unauthorized'], 403);
         }
 
+        if (!$salon->social_integrations_enabled) {
+            return response()->json([
+                'error' => 'Premium AI DM integration is not enabled for this salon.',
+            ], 403);
+        }
+
         $integration = SocialIntegration::where('id', $id)
             ->where('salon_id', $salon->id)
             ->firstOrFail();
@@ -518,6 +605,12 @@ class SocialIntegrationController extends Controller
             return response()->json(['error' => 'Unauthorized'], 403);
         }
 
+        if (!$salon->social_integrations_enabled) {
+            return response()->json([
+                'error' => 'Premium AI DM integration is not enabled for this salon.',
+            ], 403);
+        }
+
         $integration = SocialIntegration::where('salon_id', $salon->id)
             ->where('provider', 'meta')
             ->first();
@@ -539,6 +632,184 @@ class SocialIntegrationController extends Controller
         $salon->forceFill(['chatbot_enabled' => false])->save();
 
         return response()->json(['success' => true]);
+    }
+
+    /**
+     * Admin-only force disconnect for salons whose premium entitlement is already disabled.
+     */
+    public function forceDisconnect(Salon $salon): JsonResponse
+    {
+        $integration = SocialIntegration::where('salon_id', $salon->id)
+            ->where('provider', 'meta')
+            ->first();
+
+        if ($integration) {
+            $integration->update([
+                'status' => 'revoked',
+                'auto_reply_enabled' => false,
+                'webhook_verified' => false,
+                'last_verified_at' => null,
+            ]);
+        }
+
+        $salon->forceFill(['chatbot_enabled' => false])->save();
+
+        return response()->json([
+            'success' => true,
+            'message' => 'Social integration force-disconnected successfully.',
+        ]);
+    }
+
+    private function redirectToInstagramOnlyOAuth(string $state, int $salonId)
+    {
+        if (!$this->instagramOnlyAvailable()) {
+            Log::warning('Instagram-only connect requested but not configured', [
+                'salon_id' => $salonId,
+            ]);
+
+            return redirect($this->integrationRedirectUrl('error_instagram_only_unavailable'));
+        }
+
+        $url = rtrim((string) config('chatbot.meta.instagram_only.auth_url'), '?');
+        $scopes = config('chatbot.meta.instagram_only.scopes', []);
+
+        return redirect($url . '?' . http_build_query([
+            'client_id' => config('chatbot.meta.instagram_only.app_id'),
+            'redirect_uri' => $this->instagramOnlyRedirectUri(),
+            'response_type' => 'code',
+            'scope' => implode(',', array_unique($scopes)),
+            'state' => $state,
+        ]));
+    }
+
+    private function finalizeInstagramOnlyIntegration(
+        Salon $salon,
+        int $connectedByUserId,
+        string $code
+    ): SocialIntegration {
+        if (!$this->instagramOnlyAvailable()) {
+            throw new \Exception('Instagram-only connection is not configured or enabled.');
+        }
+
+        $tokenData = $this->exchangeInstagramOnlyCodeForToken($code);
+        if (empty($tokenData['access_token'])) {
+            throw new \Exception('Instagram did not return access token.');
+        }
+
+        $profile = $this->getInstagramOnlyProfile($tokenData['access_token']);
+        $instagramAccountId = (string) ($profile['id'] ?? $profile['user_id'] ?? '');
+
+        if ($instagramAccountId === '') {
+            throw new \Exception('Instagram profile response did not include account id.');
+        }
+
+        $integration = SocialIntegration::withTrashed()->firstOrNew([
+            'salon_id' => $salon->id,
+            'provider' => 'meta',
+        ]);
+
+        if ($integration->trashed()) {
+            $integration->restore();
+        }
+
+        $integration->fill([
+            'platform' => 'instagram',
+            'connection_mode' => SocialIntegration::CONNECTION_MODE_INSTAGRAM_ONLY,
+            'fb_page_id' => null,
+            'fb_page_name' => null,
+            'ig_business_account_id' => $instagramAccountId,
+            'ig_username' => $profile['username'] ?? null,
+            'access_token' => $tokenData['access_token'],
+            'token_type' => $tokenData['token_type'] ?? 'instagram_access_token',
+            'token_expires_at' => !empty($tokenData['expires_in']) ? now()->addSeconds((int) $tokenData['expires_in']) : null,
+            'granted_scopes' => config('chatbot.meta.instagram_only.scopes', []),
+            'status' => 'active',
+            'connected_by_user_id' => $connectedByUserId,
+            'meta_user_id' => $profile['user_id'] ?? $profile['id'] ?? null,
+            'webhook_verified' => false,
+            'last_verified_at' => null,
+        ]);
+        $integration->save();
+
+        $salon->forceFill(['chatbot_enabled' => true])->save();
+
+        return $integration;
+    }
+
+    private function exchangeInstagramOnlyCodeForToken(string $code): array
+    {
+        $response = Http::timeout(15)->asForm()->post((string) config('chatbot.meta.instagram_only.token_url'), [
+            'client_id' => config('chatbot.meta.instagram_only.app_id'),
+            'client_secret' => config('chatbot.meta.instagram_only.app_secret'),
+            'grant_type' => 'authorization_code',
+            'redirect_uri' => $this->instagramOnlyRedirectUri(),
+            'code' => $code,
+        ]);
+
+        if (!$response->successful()) {
+            throw new \Exception('Instagram-only token exchange failed: ' . $response->body());
+        }
+
+        return $response->json();
+    }
+
+    private function getInstagramOnlyProfile(string $accessToken): array
+    {
+        $response = Http::timeout(15)->withToken($accessToken)->get((string) config('chatbot.meta.instagram_only.profile_url'), [
+            'fields' => 'id,user_id,username,account_type',
+        ]);
+
+        if (!$response->successful()) {
+            throw new \Exception('Failed to get Instagram profile: ' . $response->body());
+        }
+
+        return $response->json();
+    }
+
+    private function instagramOnlyAvailable(): bool
+    {
+        return (bool) config('chatbot.meta.instagram_only.enabled')
+            && filled(config('chatbot.meta.instagram_only.auth_url'))
+            && filled(config('chatbot.meta.instagram_only.token_url'))
+            && filled(config('chatbot.meta.instagram_only.profile_url'))
+            && filled(config('chatbot.meta.instagram_only.app_id'))
+            && filled(config('chatbot.meta.instagram_only.app_secret'));
+    }
+
+    private function instagramOnlyRedirectUri(): string
+    {
+        return config('chatbot.meta.instagram_only.oauth_redirect_uri')
+            ?: config('chatbot.meta.oauth_redirect_uri')
+            ?: url('/api/v1/admin/social-integrations/callback');
+    }
+
+    private function normalizeConnectionMode(mixed $mode): string
+    {
+        return $mode === self::MODE_INSTAGRAM_ONLY
+            ? self::MODE_INSTAGRAM_ONLY
+            : self::MODE_FACEBOOK_PAGE;
+    }
+
+    private function buildIntegrationHealth(SocialIntegration $integration): array
+    {
+        $requiredScopes = $integration->isInstagramOnly()
+            ? config('chatbot.meta.instagram_only.scopes', [])
+            : config('chatbot.meta.required_scopes', []);
+
+        $grantedScopes = $integration->granted_scopes ?? [];
+        $missingScopes = array_values(array_diff($requiredScopes, $grantedScopes));
+
+        return [
+            'entitlement_enabled' => (bool) $integration->salon?->social_integrations_enabled,
+            'chatbot_enabled' => (bool) $integration->salon?->chatbot_enabled,
+            'token_status' => $integration->isTokenExpired() ? 'expired' : 'valid_or_unknown',
+            'required_scopes' => array_values($requiredScopes),
+            'granted_scopes' => array_values($grantedScopes),
+            'missing_scopes' => $missingScopes,
+            'webhook_verified' => (bool) $integration->webhook_verified,
+            'instagram_business_connected' => filled($integration->ig_business_account_id),
+            'connection_mode' => $integration->connection_mode ?? SocialIntegration::CONNECTION_MODE_FACEBOOK_PAGE,
+        ];
     }
 
     private function exchangeCodeForToken(string $code): array
@@ -590,12 +861,16 @@ class SocialIntegrationController extends Controller
 
         $pageInfo = $this->metaService->getPageInfo((string) $page['id'], $pageToken);
 
+        if (empty($pageInfo['instagram_business_account']['id'])) {
+            throw new \Exception('Selected Facebook page does not have a connected Instagram Business account.');
+        }
+
         $subscribed = $this->metaService->subscribeApp((string) $page['id'], $pageToken);
         if (!$subscribed) {
             throw new \Exception('Failed to subscribe app to Facebook page webhook.');
         }
 
-        $platform = isset($pageInfo['instagram_business_account']) ? 'both' : 'facebook';
+        $platform = 'both';
 
         $integration = SocialIntegration::withTrashed()->firstOrNew([
             'salon_id' => $salon->id,
@@ -608,6 +883,7 @@ class SocialIntegrationController extends Controller
 
         $integration->fill([
             'platform' => $platform,
+            'connection_mode' => SocialIntegration::CONNECTION_MODE_FACEBOOK_PAGE,
             'fb_page_id' => $pageInfo['id'] ?? $page['id'],
             'fb_page_name' => $pageInfo['name'] ?? $page['name'],
             'ig_business_account_id' => $pageInfo['instagram_business_account']['id'] ?? null,

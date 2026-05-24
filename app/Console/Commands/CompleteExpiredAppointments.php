@@ -3,6 +3,7 @@
 namespace App\Console\Commands;
 
 use App\Models\Appointment;
+use App\Services\NotificationService;
 use Carbon\Carbon;
 use Illuminate\Console\Command;
 use Illuminate\Support\Facades\Log;
@@ -26,11 +27,11 @@ class CompleteExpiredAppointments extends Command
     /**
      * Execute the console command.
      */
-    public function handle(): int
+    public function handle(NotificationService $notificationService): int
     {
         $now = Carbon::now();
         $today = $now->format('Y-m-d');
-        $currentTime = $now->format('H:i');
+        $currentTime = $now->format('H:i:s');
 
         // Find all pending/confirmed/in_progress appointments that have passed their end time
         $expiredAppointments = Appointment::whereIn('status', ['pending', 'confirmed', 'in_progress'])
@@ -40,9 +41,13 @@ class CompleteExpiredAppointments extends Command
                     // Or today but end_time has passed
                     ->orWhere(function ($query) use ($today, $currentTime) {
                         $query->where('date', $today)
-                            ->where('end_time', '<', $currentTime);
+                            ->whereRaw(
+                                "CAST(COALESCE(NULLIF(end_time, ''), NULLIF(time, ''), '00:00') AS TIME) <= ?",
+                                [$currentTime]
+                            );
                     });
             })
+            ->with(['salon', 'staff', 'service', 'client', 'review'])
             ->get();
 
         $count = $expiredAppointments->count();
@@ -53,7 +58,11 @@ class CompleteExpiredAppointments extends Command
         }
 
         foreach ($expiredAppointments as $appointment) {
+            $oldStatus = $appointment->status;
             $appointment->update(['status' => 'completed']);
+            $appointment->refresh();
+
+            $notificationService->sendAppointmentStatusChangeNotifications($appointment, $oldStatus);
 
             Log::info('Appointment auto-completed', [
                 'appointment_id' => $appointment->id,

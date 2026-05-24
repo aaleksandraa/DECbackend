@@ -46,15 +46,18 @@ class ReviewController extends Controller
             $query->where('rating', '>=', $request->min_rating);
         }
 
-        // Order by
-        if ($request->has('order_by')) {
-            $orderBy = $request->order_by;
-            $direction = $request->order_direction ?? 'desc';
+        // Order by. Keep old sort/direction query params as aliases for older clients.
+        $orderBy = $request->query('order_by', $request->query('sort'));
+        $direction = strtolower((string) $request->query('order_direction', $request->query('direction', 'desc')));
+        $direction = in_array($direction, ['asc', 'desc'], true) ? $direction : 'desc';
 
+        if ($orderBy) {
             if ($orderBy === 'date') {
                 $query->orderBy('date', $direction);
             } elseif ($orderBy === 'rating') {
                 $query->orderBy('rating', $direction);
+            } else {
+                $query->orderBy('created_at', 'desc');
             }
         } else {
             $query->orderBy('created_at', 'desc');
@@ -102,7 +105,7 @@ class ReviewController extends Controller
             'appointment_id' => $appointment->id,
             'rating' => $request->rating,
             'comment' => $request->comment,
-            'date' => now()->format('d.m.Y'),
+            'date' => now()->toDateString(),
             'is_verified' => true,
         ]);
 
