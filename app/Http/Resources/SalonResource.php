@@ -77,14 +77,18 @@ class SalonResource extends JsonResource
             'salon_vacations' => $this->when($this->relationLoaded('salonVacations'), function () {
                 return $this->salonVacations;
             }),
-            'owner' => $this->when($this->relationLoaded('owner'), function () {
+            'owner' => $this->when($this->relationLoaded('owner'), function () use ($request) {
                 if (!$this->owner) {
                     return null;
                 }
+                // Owner email is PII - only expose it to the salon owner or an admin.
+                $viewer = $request->user();
+                $canSeeEmail = $viewer && ($viewer->role === 'admin' || $viewer->id === $this->owner->id);
+
                 return [
                     'id' => $this->owner->id,
                     'name' => $this->owner->name,
-                    'email' => $this->owner->email,
+                    'email' => $canSeeEmail ? $this->owner->email : null,
                 ];
             }),
             'created_at' => $this->created_at->format('d.m.Y'),

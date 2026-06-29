@@ -6,7 +6,6 @@ use App\Http\Controllers\Api\Admin\HomepageCategoryController as AdminHomepageCa
 use App\Http\Middleware\InjectSanctumBearerFromCookie;
 use App\Http\Controllers\Api\AppointmentController;
 use App\Http\Controllers\Api\AuthController;
-use App\Http\Controllers\Api\AuthDebugController;
 use App\Http\Controllers\Api\CalendarFeedController;
 use App\Http\Controllers\Api\ChatbotController;
 use App\Http\Controllers\Api\ClientController;
@@ -60,9 +59,6 @@ Route::prefix('v1')->group(function () {
     Route::post('/reset-password', [AuthController::class, 'resetPassword'])
         ->middleware('throttle:6,1');
 
-    // Auth diagnostics endpoint (temporary production debugging)
-    Route::get('/auth/debug', [AuthDebugController::class, 'me'])->middleware('throttle:30,1');
-
     // =============================================
     // CHATBOT API
     // - Direct Meta webhook (backend-first)
@@ -89,7 +85,6 @@ Route::prefix('v1')->group(function () {
             Route::get('/{salonSlug}', [\App\Http\Controllers\Api\WidgetController::class, 'show']);
             Route::post('/slots/available', [\App\Http\Controllers\Api\WidgetController::class, 'availableSlots']);
             Route::post('/dates/available', [\App\Http\Controllers\Api\WidgetController::class, 'availableDates']);
-            Route::post('/debug/appointments', [\App\Http\Controllers\Api\WidgetController::class, 'debugAppointments']);
             Route::post('/book', [\App\Http\Controllers\Api\WidgetController::class, 'book']);
         });
     });
@@ -134,8 +129,11 @@ Route::prefix('v1')->group(function () {
             // Guest booking (no auth required)
             Route::post('/book', [PublicController::class, 'storeGuestAppointment']);
 
-            // Public ICS download (no auth required)
-            Route::get('/appointments/{appointment}/ics', [AppointmentController::class, 'downloadIcs']);
+            // Public ICS download - requires a signed URL so appointment IDs
+            // cannot be enumerated (the signed link is issued in the API response).
+            Route::get('/appointments/{appointment}/ics', [AppointmentController::class, 'downloadIcs'])
+                ->name('public.appointments.ics')
+                ->middleware('signed');
             Route::get('/calendar/staff/{token}.ics', [CalendarFeedController::class, 'staffFeed']);
 
             // Sitemap for SEO
@@ -329,7 +327,7 @@ Route::prefix('v1')->group(function () {
         // Clients management for salon owners and staff
         Route::get('/clients', [ClientController::class, 'index']);
         Route::get('/clients/export', [ClientController::class, 'export']);
-        Route::post('/clients/send-email', [ClientController::class, 'sendEmail']);
+        Route::post('/clients/send-email', [ClientController::class, 'sendEmail'])->middleware('throttle:3,1');
         Route::get('/clients/{clientId}', [ClientController::class, 'show']);
 
         // Social Integrations (Instagram/Facebook chatbot)

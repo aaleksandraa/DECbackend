@@ -252,7 +252,7 @@ class DashboardController extends Controller
             $ranges = $this->getDateRanges($period, $startDate, $endDate);
             $currentRange = $ranges['current'];
             $previousRange = $ranges['previous'];
-            $referenceNow = Carbon::now();
+            $referenceNow = Carbon::now(config('app.business_timezone', 'Europe/Sarajevo'));
 
             // Base query
             $currentQuery = Appointment::where('salon_id', $salonId)
@@ -382,7 +382,7 @@ class DashboardController extends Controller
      */
     private function getDateRanges(string $period, ?string $customStart = null, ?string $customEnd = null): array
     {
-        $now = Carbon::now();
+        $now = Carbon::now(config('app.business_timezone', 'Europe/Sarajevo'));
 
         switch ($period) {
             case 'this_month':

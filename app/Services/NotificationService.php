@@ -485,12 +485,13 @@ class NotificationService
     /**
      * Send notification for password reset.
      */
-    public function sendPasswordResetNotification(User $user, string $newPassword): void
+    public function sendPasswordResetNotification(User $user): void
     {
+        // Never persist the plaintext password in a stored/broadcast notification.
         $passwordNotification = Notification::create([
             'type' => 'password_reset',
             'title' => 'Lozinka resetovana',
-            'message' => "Administrator je resetovao vašu lozinku. Nova privremena lozinka: {$newPassword}. Molimo promijenite je nakon prijave.",
+            'message' => 'Administrator je resetovao vašu lozinku. Novu privremenu lozinku ćete dobiti zasebno. Molimo promijenite je nakon prijave.',
             'recipient_id' => $user->id,
         ]);
         broadcast(new NewNotification($passwordNotification, $user->id));

@@ -128,8 +128,8 @@ class SalonService
         $dayOfWeek = strtolower(date('l', strtotime($isoDate)));
 
         // Check salon working hours
-        $salonHours = $salon->working_hours[$dayOfWeek] ?? null;
-        if (!$salonHours || !$salonHours['is_open']) {
+        $salonHours = $salon->getNormalizedDayHours($dayOfWeek);
+        if (!$salonHours) {
             \Log::info('Salon is closed on this day', [
                 'salon_id' => $salon->id,
                 'day_of_week' => $dayOfWeek
@@ -267,14 +267,48 @@ class SalonService
      * @param array $services Array of ['serviceId' => string, 'staffId' => string, 'duration' => int]
      * @return array Available time slots
      */
+    /**
+     * Resolve slot payloads using authoritative service durations from the database.
+     *
+     * @param  array<int, array{serviceId: mixed, staffId: mixed, duration?: mixed}>  $requestedServices
+     * @return array<int, array{serviceId: string, staffId: string, duration: int}>
+     */
+    public function resolveSlotServicesFromDatabase(int $salonId, array $requestedServices): array
+    {
+        if (empty($requestedServices)) {
+            return [];
+        }
+
+        $serviceIds = collect($requestedServices)
+            ->pluck('serviceId')
+            ->map(fn ($id) => (int) $id)
+            ->unique()
+            ->values();
+
+        $servicesById = Service::query()
+            ->where('salon_id', $salonId)
+            ->whereIn('id', $serviceIds)
+            ->get()
+            ->keyBy('id');
+
+        if ($servicesById->count() !== $serviceIds->count()) {
+            throw new \InvalidArgumentException('One or more services do not belong to this salon.');
+        }
+
+        return collect($requestedServices)->map(function (array $service) use ($servicesById) {
+            $serviceId = (int) $service['serviceId'];
+            $staffId = (int) ($service['staffId'] ?? 0);
+
+            return [
+                'serviceId' => (string) $serviceId,
+                'staffId' => (string) $staffId,
+                'duration' => (int) $servicesById->get($serviceId)->duration,
+            ];
+        })->all();
+    }
+
     public function getAvailableTimeSlotsForMultipleServices(Salon $salon, string $date, array $services): array
     {
-        \Log::info('=== MULTI-SERVICE SLOT CALCULATION ===', [
-            'salon_id' => $salon->id,
-            'date' => $date,
-            'services_count' => count($services)
-        ]);
-
         if (empty($services)) {
             return [];
         }
@@ -288,9 +322,8 @@ class SalonService
         $dayOfWeek = strtolower(date('l', strtotime($isoDate)));
 
         // Check salon working hours
-        $salonHours = $salon->working_hours[$dayOfWeek] ?? null;
-        if (!$salonHours || !$salonHours['is_open']) {
-            \Log::info('Salon closed', ['day' => $dayOfWeek]);
+        $salonHours = $salon->getNormalizedDayHours($dayOfWeek);
+        if (!$salonHours) {
             return [];
         }
 
@@ -299,8 +332,6 @@ class SalonService
         foreach ($services as $service) {
             $totalDuration += $service['duration'] ?? 0;
         }
-
-        \Log::info('Total duration', ['total' => $totalDuration, 'services' => count($services)]);
 
         // Get the staff member (all services use the same staff in new logic)
         $staffId = $services[0]['staffId'] ?? null;
@@ -313,14 +344,12 @@ class SalonService
             ->find($staffId);
 
         if (!$staff) {
-            \Log::warning('Staff not found', ['staff_id' => $staffId]);
             return [];
         }
 
         // Check staff working hours
         $staffHours = $staff->working_hours[$dayOfWeek] ?? null;
         if (!$staffHours || !$staffHours['is_working']) {
-            \Log::info('Staff not working', ['staff_id' => $staffId, 'day' => $dayOfWeek]);
             return [];
         }
 
@@ -328,28 +357,11 @@ class SalonService
         $effectiveStart = max($salonHours['open'], $staffHours['start']);
         $effectiveEnd = min($salonHours['close'], $staffHours['end']);
 
-        \Log::info('Working hours', [
-            'salon' => $salonHours['open'] . '-' . $salonHours['close'],
-            'staff' => $staffHours['start'] . '-' . $staffHours['end'],
-            'effective' => $effectiveStart . '-' . $effectiveEnd
-        ]);
-
         // Calculate latest possible start time based on TOTAL duration
         $endTimeTimestamp = strtotime($effectiveEnd);
         $latestStartTime = date('H:i', strtotime("-{$totalDuration} minutes", $endTimeTimestamp));
 
-        \Log::info('Latest start time', [
-            'end_time' => $effectiveEnd,
-            'total_duration' => $totalDuration,
-            'latest_start' => $latestStartTime
-        ]);
-
         if (strtotime($latestStartTime) < strtotime($effectiveStart)) {
-            \Log::warning('No slots - duration too long', [
-                'start' => $effectiveStart,
-                'latest' => $latestStartTime,
-                'duration' => $totalDuration
-            ]);
             return [];
         }
 
@@ -375,15 +387,6 @@ class SalonService
                 $availableSlots[] = $slot;
             }
         }
-
-        \Log::info('Available slots result', [
-            'potential' => count($potentialSlots),
-            'available' => count($availableSlots),
-            'is_today' => $isToday,
-            'current_time' => $currentTime,
-            'first' => $availableSlots[0] ?? null,
-            'last' => end($availableSlots) ?: null
-        ]);
 
         return $availableSlots;
     }

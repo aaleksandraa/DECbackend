@@ -135,6 +135,8 @@ class ReviewController extends Controller
      */
     public function show(Review $review): ReviewResource
     {
+        $this->authorize('view', $review);
+
         $review->load(['client', 'salon', 'staff', 'appointment']);
 
         return new ReviewResource($review);

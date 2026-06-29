@@ -165,6 +165,10 @@ class StaffController extends Controller
             abort(404);
         }
 
+        // Only the salon owner, an admin, or the staff member themselves may
+        // read a staff member's appointments (which include client PII).
+        $this->authorize('updateStaff', [$salon, $staff]);
+
         $request->validate([
             'date' => 'sometimes|string',
             'status' => 'sometimes|in:pending,confirmed,in_progress,completed,cancelled,no_show',

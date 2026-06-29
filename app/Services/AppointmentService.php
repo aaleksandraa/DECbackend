@@ -3,6 +3,7 @@
 namespace App\Services;
 
 use App\Models\Appointment;
+use App\Models\Service;
 use App\Models\Staff;
 use Carbon\Carbon;
 
@@ -137,43 +138,83 @@ class AppointmentService
 
         $existingAppointments = $query->get();
 
-        // Log when checking availability
-        \Log::info('AppointmentService: Checking availability', [
-            'staff_id' => $staff->id,
-            'date' => $isoDate,
-            'carbon_date' => $carbonDate->format('Y-m-d'),
-            'time' => $time,
-            'duration' => $duration,
-            'existing_count' => $existingAppointments->count(),
-            'appointments' => $existingAppointments->map(fn($a) => [
-                'id' => $a->id,
-                'date' => $a->date,
-                'time' => $a->time,
-                'end_time' => $a->end_time,
-                'status' => $a->status,
-                'source' => $a->source ?? 'manual'
-            ])->toArray()
-        ]);
-
         foreach ($existingAppointments as $appointment) {
-            $existingStart = strtotime($appointment->time);
-            $existingEnd = strtotime($appointment->end_time);
+            $interval = $this->resolveAppointmentInterval($appointment);
+            if ($interval === null) {
+                continue;
+            }
 
-            // Check if appointment overlaps with existing appointment
-            if (($appointmentTime < $existingEnd) && ($appointmentEndTime > $existingStart)) {
+            [$existingStart, $existingEnd] = $interval;
+
+            if ($appointmentTime < $existingEnd && $appointmentEndTime > $existingStart) {
                 \Log::warning('AppointmentService: Time slot occupied', [
+                    'staff_id' => $staff->id,
                     'requested_time' => $time,
                     'requested_end' => date('H:i', $appointmentEndTime),
-                    'existing_time' => $appointment->time,
-                    'existing_end' => $appointment->end_time,
                     'existing_id' => $appointment->id,
-                    'existing_source' => $appointment->source ?? 'manual'
+                    'existing_time' => substr((string) $appointment->time, 0, 5),
+                    'existing_end' => substr((string) $appointment->end_time, 0, 5),
                 ]);
+
                 return 'TIME_SLOT_TAKEN';
             }
         }
 
         return null;
+    }
+
+    /**
+     * Resolve an appointment's blocking interval in unix timestamps.
+     *
+     * @return array{0: int, 1: int}|null
+     */
+    public function resolveBlockingInterval(Appointment $appointment): ?array
+    {
+        return $this->resolveAppointmentInterval($appointment);
+    }
+
+    /**
+     * Resolve an appointment's blocking interval in unix timestamps.
+     *
+     * @return array{0: int, 1: int}|null
+     */
+    private function resolveAppointmentInterval(Appointment $appointment): ?array
+    {
+        $time = substr(trim((string) $appointment->time), 0, 5);
+        if (!preg_match('/^\d{2}:\d{2}$/', $time)) {
+            return null;
+        }
+
+        $start = strtotime($time);
+        $endTime = substr(trim((string) $appointment->end_time), 0, 5);
+
+        if (preg_match('/^\d{2}:\d{2}$/', $endTime)) {
+            return [$start, strtotime($endTime)];
+        }
+
+        $duration = $this->resolveAppointmentDurationMinutes($appointment);
+        if ($duration <= 0) {
+            return null;
+        }
+
+        return [$start, strtotime("+{$duration} minutes", $start)];
+    }
+
+    private function resolveAppointmentDurationMinutes(Appointment $appointment): int
+    {
+        if (!empty($appointment->service_ids) && is_array($appointment->service_ids)) {
+            return (int) Service::query()
+                ->whereIn('id', $appointment->service_ids)
+                ->sum('duration');
+        }
+
+        if ($appointment->service_id) {
+            $appointment->loadMissing('service');
+
+            return (int) ($appointment->service?->duration ?? 0);
+        }
+
+        return 0;
     }
 
     /**
@@ -183,7 +224,9 @@ class AppointmentService
     {
         $service = $staff->services()->findOrFail($serviceId);
         $availableDates = [];
-        $today = now();
+        // Enumerate days from "today" in the business timezone so the first
+        // bookable day is correct near the UTC/local date boundary.
+        $today = now(config('app.business_timezone', 'Europe/Sarajevo'));
 
         for ($i = 0; $i < $daysAhead; $i++) {
             $date = $today->copy()->addDays($i);
@@ -425,10 +468,11 @@ class AppointmentService
 
             // Check if slot is available
             if ($this->isStaffAvailable($staff, $isoDate, $slot, $duration)) {
-                // If it's today, filter out past times
-                if ($isoDate === Carbon::now()->format('Y-m-d')) {
-                    $now = Carbon::now()->format('H:i');
-                    if ($slot <= $now) {
+                // If it's today, filter out past times. Slot strings are naive
+                // local wall-clock, so compare against business-timezone "now".
+                $businessNow = Carbon::now(config('app.business_timezone', 'Europe/Sarajevo'));
+                if ($isoDate === $businessNow->format('Y-m-d')) {
+                    if ($slot <= $businessNow->format('H:i')) {
                         continue;
                     }
                 }

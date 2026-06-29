@@ -29,7 +29,9 @@ class CompleteExpiredAppointments extends Command
      */
     public function handle(NotificationService $notificationService): int
     {
-        $now = Carbon::now();
+        // Appointment date/time are naive local wall-clock values, so "now"
+        // must be evaluated in the business timezone (not the UTC app tz).
+        $now = Carbon::now(config('app.business_timezone', 'Europe/Sarajevo'));
         $today = $now->format('Y-m-d');
         $currentTime = $now->format('H:i:s');
 

@@ -27,7 +27,9 @@ class AppointmentAutoCompletionReviewEmailTest extends TestCase
     {
         parent::setUp();
 
-        Carbon::setTestNow(Carbon::parse('2026-05-24 12:00:00'));
+        // Appointment date/time are naive business-local values, so the frozen
+        // "now" is set in the business timezone to mirror production semantics.
+        Carbon::setTestNow(Carbon::parse('2026-05-24 12:00:00', config('app.business_timezone', 'Europe/Sarajevo')));
 
         $this->owner = User::factory()->create(['role' => 'salon']);
         $this->salon = Salon::factory()->create([

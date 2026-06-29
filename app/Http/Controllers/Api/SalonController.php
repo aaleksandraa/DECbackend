@@ -104,8 +104,21 @@ class SalonController extends Controller
     /**
      * Display the specified salon.
      */
-    public function show(Salon $salon): SalonResource
+    public function show(Request $request, Salon $salon): SalonResource
     {
+        // Non-approved salons (pending/suspended) must not be publicly visible.
+        // The owner and admins may still view their own salon for management.
+        if ($salon->status !== 'approved') {
+            // This is a public route (no auth middleware), so resolve the viewer
+            // optionally via the sanctum guard to still allow owner/admin preview.
+            $viewer = $request->user() ?? auth('sanctum')->user();
+            $canView = $viewer && ($viewer->role === 'admin' || $viewer->id === $salon->owner_id);
+
+            if (!$canView) {
+                abort(404);
+            }
+        }
+
         // Load relations without caching to ensure fresh data with proper URLs
         $salon->load(['images', 'services.staff', 'staff', 'reviews', 'salonBreaks', 'salonVacations']);
 

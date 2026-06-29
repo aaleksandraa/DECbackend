@@ -21,6 +21,8 @@ class ScheduleController extends Controller
      */
     public function getSalonBreaks(Salon $salon): JsonResponse
     {
+        $this->authorize('update', $salon);
+
         $breaks = $salon->salonBreaks()->get();
 
         return response()->json([
@@ -85,6 +87,8 @@ class ScheduleController extends Controller
      */
     public function getSalonVacations(Salon $salon): JsonResponse
     {
+        $this->authorize('update', $salon);
+
         $vacations = $salon->salonVacations()->get();
 
         return response()->json([
@@ -149,6 +153,8 @@ class ScheduleController extends Controller
      */
     public function getStaffBreaks(Staff $staff): JsonResponse
     {
+        $this->authorize('updateStaff', [$staff->salon, $staff]);
+
         $breaks = $staff->breaks()->get();
 
         return response()->json([
@@ -213,6 +219,8 @@ class ScheduleController extends Controller
      */
     public function getStaffVacations(Staff $staff): JsonResponse
     {
+        $this->authorize('updateStaff', [$staff->salon, $staff]);
+
         $vacations = $staff->vacations()->get();
 
         return response()->json([

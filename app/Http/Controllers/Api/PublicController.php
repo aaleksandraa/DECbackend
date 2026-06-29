@@ -13,6 +13,7 @@ use App\Models\Staff;
 use App\Services\AppointmentService;
 use App\Services\BookingService;
 use App\Services\NotificationService;
+use App\Services\SalonService;
 use Carbon\Carbon;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
@@ -27,15 +28,18 @@ class PublicController extends Controller
     protected AppointmentService $appointmentService;
     protected NotificationService $notificationService;
     protected BookingService $bookingService;
+    protected SalonService $salonService;
 
     public function __construct(
         AppointmentService $appointmentService,
         BookingService $bookingService,
-        NotificationService $notificationService
+        NotificationService $notificationService,
+        SalonService $salonService,
     ) {
         $this->appointmentService = $appointmentService;
         $this->bookingService = $bookingService;
         $this->notificationService = $notificationService;
+        $this->salonService = $salonService;
     }
 
     /**
@@ -72,17 +76,19 @@ class PublicController extends Controller
             return $user;
         }
 
-        // Create new guest user
-        return \App\Models\User::create([
+        // Create new guest user. role is set explicitly (not mass assignable).
+        $guest = new \App\Models\User([
             'name' => $data['name'],
             'email' => $data['email'],
             'phone' => $data['phone'] ?? null,
             'password' => bcrypt(\Illuminate\Support\Str::random(32)), // Random password
-            'email_verified_at' => null,
-            'role' => 'klijent',
             'is_guest' => true,
             'created_via' => 'booking',
         ]);
+        $guest->role = 'klijent';
+        $guest->save();
+
+        return $guest;
     }
 
     /**
@@ -359,7 +365,7 @@ class PublicController extends Controller
                 'services' => function ($q) {
                     $q->select('id', 'salon_id', 'name', 'category', 'price', 'duration'); // Only needed fields
                 },
-                'owner:id,name,email'
+                'owner:id,name'
             ])
             ->withCount(['reviews', 'staff']);
 
@@ -464,39 +470,42 @@ class PublicController extends Controller
             $query->where('rating', '>=', $request->min_rating);
         }
 
-        // Filter by target audience
+        // Filter by target audience (whitelist keys to prevent JSON path probing)
         if ($request->filled('audience')) {
+            $allowedAudience = ['women', 'men', 'children'];
             $audience = is_array($request->audience) ? $request->audience : [$request->audience];
             foreach ($audience as $type) {
-                $query->whereJsonContains('target_audience->' . $type, true);
+                if (in_array($type, $allowedAudience, true)) {
+                    $query->whereJsonContains('target_audience->' . $type, true);
+                }
             }
         }
 
-        // Sort options - map frontend values to database columns
+        // Sort options - map frontend values to database columns.
+        // Only whitelisted columns/directions are allowed (no arbitrary orderBy).
         $sortMapping = [
-            'newest' => 'created_at',
-            'oldest' => 'created_at',
-            'rating' => 'rating',
-            'name' => 'name',
-            'review_count' => 'review_count',
+            'newest' => ['created_at', 'desc'],
+            'oldest' => ['created_at', 'asc'],
+            'rating' => ['rating', 'desc'],
+            'name' => ['name', 'asc'],
+            'review_count' => ['review_count', 'desc'],
         ];
-        $sortField = $request->sort ?? 'rating';
-        $sortDirection = $request->direction ?? 'desc';
 
-        // Handle special cases where sort value implies direction
-        if ($sortField === 'newest') {
-            $sortField = 'created_at';
-            $sortDirection = 'desc';
-        } elseif ($sortField === 'oldest') {
-            $sortField = 'created_at';
-            $sortDirection = 'asc';
-        } elseif (isset($sortMapping[$sortField])) {
-            $sortField = $sortMapping[$sortField];
+        $requestedSort = $request->sort ?? 'rating';
+        [$sortField, $defaultDirection] = $sortMapping[$requestedSort] ?? $sortMapping['rating'];
+
+        $sortDirection = strtolower((string) ($request->direction ?? $defaultDirection));
+        if (!in_array($sortDirection, ['asc', 'desc'], true)) {
+            $sortDirection = $defaultDirection;
         }
 
         $query->orderBy($sortField, $sortDirection);
 
-        $salons = $query->paginate($request->per_page ?? 12);
+        // Cap per_page to avoid resource exhaustion from huge page sizes.
+        $perPage = (int) ($request->per_page ?? 12);
+        $perPage = max(1, min($perPage, 50));
+
+        $salons = $query->paginate($perPage);
 
         $responseData = [
             'salons' => SalonResource::collection($salons),
@@ -688,7 +697,7 @@ class PublicController extends Controller
             'services' => 'required|array|min:1',
             'services.*.serviceId' => 'required|exists:services,id',
             'services.*.staffId' => 'required|exists:staff,id',
-            'services.*.duration' => 'required|integer|min:1',
+            'services.*.duration' => 'sometimes|integer|min:1',
         ]);
 
         if ($validator->fails()) {
@@ -699,12 +708,22 @@ class PublicController extends Controller
         }
 
         $salon = Salon::findOrFail($request->salon_id);
-        $salonService = app(\App\Services\SalonService::class);
 
-        $slots = $salonService->getAvailableTimeSlotsForMultipleServices(
+        try {
+            $servicesData = $this->salonService->resolveSlotServicesFromDatabase(
+                $salon->id,
+                $request->services
+            );
+        } catch (\InvalidArgumentException $e) {
+            return response()->json([
+                'message' => $e->getMessage(),
+            ], 422);
+        }
+
+        $slots = $this->salonService->getAvailableTimeSlotsForMultipleServices(
             $salon,
             $request->date,
-            $request->services
+            $servicesData
         );
 
         return response()->json([
@@ -725,7 +744,7 @@ class PublicController extends Controller
             'services' => 'required|array|min:1',
             'services.*.serviceId' => 'required|exists:services,id',
             'services.*.staffId' => 'required|exists:staff,id',
-            'services.*.duration' => 'required|integer|min:0',
+            'services.*.duration' => 'sometimes|integer|min:0',
         ]);
 
         if ($validator->fails()) {
@@ -738,7 +757,17 @@ class PublicController extends Controller
         $salon = Salon::findOrFail($request->salon_id);
         $staff = Staff::with(['vacations', 'breaks', 'salon.salonVacations', 'salon.salonBreaks'])
             ->findOrFail($request->staff_id);
-        $salonService = app(\App\Services\SalonService::class);
+
+        try {
+            $servicesData = $this->salonService->resolveSlotServicesFromDatabase(
+                $salon->id,
+                $request->services
+            );
+        } catch (\InvalidArgumentException $e) {
+            return response()->json([
+                'message' => $e->getMessage(),
+            ], 422);
+        }
 
         // Parse month
         $monthStr = $request->month;
@@ -748,7 +777,7 @@ class PublicController extends Controller
         // Get first and last day of month
         $firstDay = \Carbon\Carbon::createFromDate($year, $month, 1);
         $lastDay = $firstDay->copy()->endOfMonth();
-        $today = \Carbon\Carbon::today();
+        $today = \Carbon\Carbon::today(config('app.business_timezone', 'Europe/Sarajevo'));
 
         $dates = [];
 
@@ -810,10 +839,10 @@ class PublicController extends Controller
             }
 
             // Get available slots for this day
-            $slots = $salonService->getAvailableTimeSlotsForMultipleServices(
+            $slots = $this->salonService->getAvailableTimeSlotsForMultipleServices(
                 $salon,
                 $dateStr,
-                $request->services
+                $servicesData
             );
 
             $totalSlots = count($slots);

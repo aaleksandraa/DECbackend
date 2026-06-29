@@ -13,6 +13,7 @@ use App\Models\WidgetAnalytics;
 use App\Models\Appointment;
 use App\Models\Staff;
 use App\Services\BookingService;
+use App\Services\SalonService;
 use App\Services\NotificationService;
 use Illuminate\Support\Facades\Validator;
 use Illuminate\Support\Facades\Log;
@@ -22,11 +23,16 @@ class WidgetController extends Controller
 {
     protected NotificationService $notificationService;
     protected BookingService $bookingService;
+    protected SalonService $salonService;
 
-    public function __construct(NotificationService $notificationService, BookingService $bookingService)
-    {
+    public function __construct(
+        NotificationService $notificationService,
+        BookingService $bookingService,
+        SalonService $salonService,
+    ) {
         $this->notificationService = $notificationService;
         $this->bookingService = $bookingService;
+        $this->salonService = $salonService;
     }
 
     /**
@@ -63,17 +69,19 @@ class WidgetController extends Controller
             return $user;
         }
 
-        // Create new guest user
-        return \App\Models\User::create([
+        // Create new guest user. role is set explicitly (not mass assignable).
+        $guest = new \App\Models\User([
             'name' => $data['name'],
             'email' => $data['email'],
             'phone' => $data['phone'] ?? null,
             'password' => bcrypt(\Illuminate\Support\Str::random(32)),
-            'email_verified_at' => null,
-            'role' => 'klijent',
             'is_guest' => true,
             'created_via' => 'widget',
         ]);
+        $guest->role = 'klijent';
+        $guest->save();
+
+        return $guest;
     }
 
     /**
@@ -227,7 +235,7 @@ class WidgetController extends Controller
             'date' => ['required', 'regex:/^\d{2}\.\d{2}\.\d{4}$/'],
             'services' => 'required|array|min:1',
             'services.*.serviceId' => 'required|exists:services,id',
-            'services.*.duration' => 'required|integer|min:0',
+            'services.*.duration' => 'sometimes|integer|min:0',
         ]);
 
         if ($validator->fails()) {
@@ -241,18 +249,23 @@ class WidgetController extends Controller
             return response()->json(['error' => 'Invalid staff for this salon'], 403);
         }
 
-        $servicesData = array_map(function($service) use ($staffId) {
-            return [
-                'serviceId' => $service['serviceId'],
-                'staffId' => $staffId,
-                'duration' => $service['duration'],
-            ];
-        }, $request->input('services'));
+        try {
+            $servicesData = $this->salonService->resolveSlotServicesFromDatabase(
+                $widgetSetting->salon_id,
+                array_map(function ($service) use ($staffId) {
+                    return [
+                        'serviceId' => $service['serviceId'],
+                        'staffId' => $staffId,
+                    ];
+                }, $request->input('services'))
+            );
+        } catch (\InvalidArgumentException $e) {
+            return response()->json(['error' => $e->getMessage()], 422);
+        }
 
         $salon = Salon::findOrFail($widgetSetting->salon_id);
-        $salonService = app(\App\Services\SalonService::class);
 
-        $slots = $salonService->getAvailableTimeSlotsForMultipleServices(
+        $slots = $this->salonService->getAvailableTimeSlotsForMultipleServices(
             $salon,
             $request->input('date'),
             $servicesData
@@ -278,12 +291,19 @@ class WidgetController extends Controller
             return response()->json(['error' => 'Invalid API key'], 401);
         }
 
+        $referer = $request->headers->get('referer');
+        $domain = $referer ? parse_url($referer, PHP_URL_HOST) : null;
+
+        if (!$widgetSetting->isDomainAllowed($domain)) {
+            return response()->json(['error' => 'Domain not allowed'], 403);
+        }
+
         $validator = Validator::make($request->all(), [
             'staff_id' => 'required|integer|exists:staff,id',
             'month' => ['required', 'regex:/^\d{4}-\d{2}$/'], // YYYY-MM format
             'services' => 'required|array|min:1',
             'services.*.serviceId' => 'required|exists:services,id',
-            'services.*.duration' => 'required|integer|min:0',
+            'services.*.duration' => 'sometimes|integer|min:0',
         ]);
 
         if ($validator->fails()) {
@@ -297,8 +317,21 @@ class WidgetController extends Controller
             return response()->json(['error' => 'Invalid staff for this salon'], 403);
         }
 
+        try {
+            $servicesData = $this->salonService->resolveSlotServicesFromDatabase(
+                $widgetSetting->salon_id,
+                array_map(function ($service) use ($staffId) {
+                    return [
+                        'serviceId' => $service['serviceId'],
+                        'staffId' => $staffId,
+                    ];
+                }, $request->input('services'))
+            );
+        } catch (\InvalidArgumentException $e) {
+            return response()->json(['error' => $e->getMessage()], 422);
+        }
+
         $salon = Salon::findOrFail($widgetSetting->salon_id);
-        $salonService = app(\App\Services\SalonService::class);
 
         // Parse month
         $monthStr = $request->input('month');
@@ -309,14 +342,6 @@ class WidgetController extends Controller
         $firstDay = Carbon::createFromDate($year, $month, 1);
         $lastDay = $firstDay->copy()->endOfMonth();
         $today = Carbon::today();
-
-        $servicesData = array_map(function($service) use ($staffId) {
-            return [
-                'serviceId' => $service['serviceId'],
-                'staffId' => $staffId,
-                'duration' => $service['duration'],
-            ];
-        }, $request->input('services'));
 
         $availableDates = [];
         $unavailableDates = [];
@@ -334,8 +359,8 @@ class WidgetController extends Controller
 
             // Check if salon is open on this day
             $dayOfWeek = strtolower($day->format('l'));
-            $salonHours = $salon->working_hours[$dayOfWeek] ?? null;
-            if (!$salonHours || !$salonHours['is_open']) {
+            $salonHours = $salon->getNormalizedDayHours($dayOfWeek);
+            if (!$salonHours) {
                 $unavailableDates[] = $isoDate;
                 continue;
             }
@@ -348,7 +373,7 @@ class WidgetController extends Controller
             }
 
             // Get available slots for this day
-            $slots = $salonService->getAvailableTimeSlotsForMultipleServices(
+            $slots = $this->salonService->getAvailableTimeSlotsForMultipleServices(
                 $salon,
                 $dateStr,
                 $servicesData
@@ -369,73 +394,6 @@ class WidgetController extends Controller
     }
 
     /**
-     * Debug endpoint to check appointments for a staff member on a specific date
-     * This helps diagnose why slots might appear available when they shouldn't be
-     */
-    public function debugAppointments(Request $request): JsonResponse
-    {
-        $validator = Validator::make($request->all(), [
-            'staff_id' => 'required|integer|exists:staff,id',
-            'date' => ['required', 'regex:/^\d{2}\.\d{2}\.\d{4}$/'],
-        ]);
-
-        if ($validator->fails()) {
-            return response()->json(['error' => $validator->errors()->first()], 422);
-        }
-
-        $staffId = $request->input('staff_id');
-        $dateInput = $request->input('date');
-
-        // Convert date format
-        $isoDate = Carbon::createFromFormat('d.m.Y', $dateInput)->format('Y-m-d');
-
-        // Get all appointments for this staff on this date (any status)
-        $allAppointments = Appointment::where('staff_id', $staffId)
-            ->whereDate('date', $isoDate)
-            ->get();
-
-        // Get blocking appointments (pending, confirmed, in_progress)
-        $blockingAppointments = Appointment::where('staff_id', $staffId)
-            ->whereDate('date', $isoDate)
-            ->whereIn('status', ['pending', 'confirmed', 'in_progress'])
-            ->get();
-
-        // Also try with direct date comparison for debugging
-        $directCompareAppointments = Appointment::where('staff_id', $staffId)
-            ->where('date', $isoDate)
-            ->get();
-
-        return response()->json([
-            'debug_info' => [
-                'staff_id' => $staffId,
-                'date_input' => $dateInput,
-                'iso_date' => $isoDate,
-                'query_methods' => [
-                    'whereDate_all' => $allAppointments->count(),
-                    'whereDate_blocking' => $blockingAppointments->count(),
-                    'direct_compare' => $directCompareAppointments->count(),
-                ],
-            ],
-            'all_appointments' => $allAppointments->map(fn($a) => [
-                'id' => $a->id,
-                'date_raw' => $a->getRawOriginal('date'),
-                'date_formatted' => $a->date ? $a->date->format('Y-m-d') : null,
-                'time' => $a->time,
-                'end_time' => $a->end_time,
-                'status' => $a->status,
-                'client_name' => $a->client_name,
-                'service_id' => $a->service_id,
-            ])->toArray(),
-            'blocking_appointments' => $blockingAppointments->map(fn($a) => [
-                'id' => $a->id,
-                'time' => $a->time,
-                'end_time' => $a->end_time,
-                'status' => $a->status,
-            ])->toArray(),
-        ]);
-    }
-
-    /**
      * Book appointment(s) via widget
      */
     public function book(Request $request): JsonResponse
@@ -452,11 +410,12 @@ class WidgetController extends Controller
             return response()->json(['error' => 'Invalid API key'], 401);
         }
 
-        // FIXED: Allow null referer (Safari/iOS often don't send it)
+        // Domain check. isDomainAllowed() allows all when no whitelist is set,
+        // but enforces it (including denying a missing referer) once configured.
         $referer = $request->headers->get('referer');
         $domain = $referer ? parse_url($referer, PHP_URL_HOST) : null;
 
-        if ($domain && !$widgetSetting->isDomainAllowed($domain)) {
+        if (!$widgetSetting->isDomainAllowed($domain)) {
             $this->logAnalytics($widgetSetting->salon_id, WidgetAnalytics::EVENT_ERROR, $request, [
                 'error' => 'Domain not allowed',
                 'domain' => $domain,

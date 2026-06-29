@@ -43,23 +43,26 @@ class WidgetSetting extends Model
     }
 
     /**
-     * Check if domain is allowed
-     * FIXED: Allow null domain (no referer header)
+     * Check if domain is allowed.
+     *
+     * Backward compatible: when no whitelist is configured, all domains are
+     * allowed (so existing unconfigured widgets keep working). When a whitelist
+     * IS configured, a missing/empty origin is denied - otherwise the whitelist
+     * could be bypassed simply by omitting the Referer header.
      */
     public function isDomainAllowed(?string $domain): bool
     {
-        // If no domain provided (no referer), allow it
-        if (empty($domain)) {
-            return true;
-        }
-
-        // If no whitelist, allow all
+        // No whitelist configured -> allow all (backward compatible).
         if (empty($this->allowed_domains)) {
             return true;
         }
 
-        // Check if domain is in whitelist
-        return in_array($domain, $this->allowed_domains);
+        // A whitelist exists: an unknown/missing origin must not bypass it.
+        if (empty($domain)) {
+            return false;
+        }
+
+        return in_array($domain, $this->allowed_domains, true);
     }
 
     /**

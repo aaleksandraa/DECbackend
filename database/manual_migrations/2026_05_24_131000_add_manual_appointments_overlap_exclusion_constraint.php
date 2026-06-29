@@ -15,6 +15,33 @@ return new class extends Migration
             return;
         }
 
+        DB::statement("
+            CREATE OR REPLACE FUNCTION appointment_blocking_tsrange(
+                appointment_date date,
+                start_time text,
+                end_time text
+            )
+            RETURNS tsrange
+            LANGUAGE sql
+            IMMUTABLE
+            STRICT
+            AS $$
+                SELECT tsrange(
+                    appointment_date + make_time(
+                        split_part(substring(start_time from 1 for 5), ':', 1)::int,
+                        split_part(substring(start_time from 1 for 5), ':', 2)::int,
+                        0
+                    ),
+                    appointment_date + make_time(
+                        split_part(substring(end_time from 1 for 5), ':', 1)::int,
+                        split_part(substring(end_time from 1 for 5), ':', 2)::int,
+                        0
+                    ),
+                    '[)'
+                );
+            $$
+        ");
+
         $conflicts = DB::select("
             SELECT a.id AS first_id, b.id AS second_id
             FROM appointments a
@@ -30,8 +57,8 @@ return new class extends Migration
              AND b.time IS NOT NULL
              AND a.end_time IS NOT NULL
              AND b.end_time IS NOT NULL
-             AND tsrange((a.date + a.time::time)::timestamp, (a.date + a.end_time::time)::timestamp, '[)')
-                 && tsrange((b.date + b.time::time)::timestamp, (b.date + b.end_time::time)::timestamp, '[)')
+             AND appointment_blocking_tsrange(a.date, a.time, a.end_time)
+                 && appointment_blocking_tsrange(b.date, b.time, b.end_time)
             LIMIT 1
         ");
 
@@ -42,20 +69,20 @@ return new class extends Migration
         }
 
         DB::statement('CREATE EXTENSION IF NOT EXISTS btree_gist');
-        DB::statement("
+        DB::statement('
             ALTER TABLE appointments
             ADD CONSTRAINT appointments_no_overlap
             EXCLUDE USING gist (
                 staff_id WITH =,
-                tsrange((date + time::time)::timestamp, (date + end_time::time)::timestamp, '[)') WITH &&
+                appointment_blocking_tsrange(date, time, end_time) WITH &&
             )
             WHERE (
                 deleted_at IS NULL
-                AND status IN ('pending', 'confirmed', 'in_progress')
+                AND status IN (\'pending\', \'confirmed\', \'in_progress\')
                 AND time IS NOT NULL
                 AND end_time IS NOT NULL
             )
-        ");
+        ');
     }
 
     public function down(): void
@@ -65,5 +92,6 @@ return new class extends Migration
         }
 
         DB::statement('ALTER TABLE appointments DROP CONSTRAINT IF EXISTS appointments_no_overlap');
+        DB::statement('DROP FUNCTION IF EXISTS appointment_blocking_tsrange(date, text, text)');
     }
 };

@@ -343,17 +343,19 @@ class ImportService
             return $user;
         }
 
-        // Create new guest user
-        return User::create([
+        // Create new guest user. role is set explicitly (not mass assignable).
+        $guest = new User([
             'name' => $data['name'],
             'email' => $data['email'],
             'phone' => $this->normalizePhone($data['phone']),
             'password' => bcrypt(Str::random(32)), // Random password for guest users
-            'email_verified_at' => null,
-            'role' => 'klijent',
             'is_guest' => true,
             'created_via' => 'import',
         ]);
+        $guest->role = 'klijent';
+        $guest->save();
+
+        return $guest;
     }
 
     /**

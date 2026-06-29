@@ -90,7 +90,7 @@ class BookingService
             }
         }
 
-        return DB::transaction(function () use (
+        $result = DB::transaction(function () use (
             $data,
             $salonId,
             $serviceIds,
@@ -107,7 +107,7 @@ class BookingService
             if ($idempotencyKey) {
                 $existingAppointment = $this->findAppointmentByIdempotencyKey($salon->id, $bookingSource, $idempotencyKey, true);
                 if ($existingAppointment) {
-                    return $existingAppointment;
+                    return ['appointment' => $existingAppointment, 'created' => false];
                 }
             }
 
@@ -165,7 +165,7 @@ class BookingService
                 if ($idempotencyKey && $this->isIdempotencyException($e)) {
                     $existingAppointment = $this->findAppointmentByIdempotencyKey($salon->id, $bookingSource, $idempotencyKey);
                     if ($existingAppointment) {
-                        return $existingAppointment;
+                        return ['appointment' => $existingAppointment, 'created' => false];
                     }
                 }
 
@@ -176,6 +176,16 @@ class BookingService
                 throw $e;
             }
 
+            return ['appointment' => $appointment, 'created' => true];
+        });
+
+        $appointment = $result['appointment'];
+
+        // Notifications/emails are dispatched only after the booking transaction
+        // commits. This keeps row/advisory locks held for the shortest possible
+        // time and avoids sending messages for a booking that could still roll
+        // back. They remain best-effort: a failure here never voids the booking.
+        if ($result['created'] === true) {
             if (($options['send_notifications'] ?? true) === true) {
                 try {
                     $this->notificationService->sendNewAppointmentNotifications($appointment);
@@ -197,9 +207,9 @@ class BookingService
                     ]);
                 }
             }
+        }
 
-            return $appointment->load(['salon', 'staff', 'service']);
-        });
+        return $appointment->load(['salon', 'staff', 'service']);
     }
 
     /**
@@ -411,8 +421,11 @@ class BookingService
             return;
         }
 
-        $startsAt = Carbon::createFromFormat('Y-m-d H:i', "{$date} {$time}");
-        if ($startsAt->lessThanOrEqualTo(now())) {
+        // date/time are naive local wall-clock; evaluate "is in the past"
+        // entirely in the business timezone so both sides share one clock.
+        $tz = config('app.business_timezone', 'Europe/Sarajevo');
+        $startsAt = Carbon::createFromFormat('Y-m-d H:i', "{$date} {$time}", $tz);
+        if ($startsAt->lessThanOrEqualTo(Carbon::now($tz))) {
             throw new BookingUnavailableException('Termin mora biti u buducnosti.', 'PAST_TIME');
         }
     }
@@ -521,12 +534,12 @@ class BookingService
         }
 
         foreach ($query->get() as $appointment) {
-            if ($this->isBlankTime($appointment->time) || $this->isBlankTime($appointment->end_time)) {
+            $interval = $this->appointmentService->resolveBlockingInterval($appointment);
+            if ($interval === null) {
                 continue;
             }
 
-            $existingStart = strtotime(substr((string) $appointment->time, 0, 5));
-            $existingEnd = strtotime(substr((string) $appointment->end_time, 0, 5));
+            [$existingStart, $existingEnd] = $interval;
 
             if ($appointmentStart < $existingEnd && $appointmentEnd > $existingStart) {
                 return true;
@@ -534,11 +547,6 @@ class BookingService
         }
 
         return false;
-    }
-
-    private function isBlankTime(?string $time): bool
-    {
-        return trim((string) $time) === '';
     }
 
     private function findOrCreateGuestUser(array $data): ?User
@@ -569,16 +577,19 @@ class BookingService
 
         Log::info('Creating guest user for booking', ['email' => $email]);
 
-        return User::create([
+        // role is set explicitly (not mass assignable).
+        $guest = new User([
             'name' => $data['name'] ?? 'Gost',
             'email' => $email,
             'phone' => $data['phone'] ?? null,
             'password' => bcrypt(Str::random(32)),
-            'email_verified_at' => null,
-            'role' => 'klijent',
             'is_guest' => true,
             'created_via' => 'booking',
         ]);
+        $guest->role = 'klijent';
+        $guest->save();
+
+        return $guest;
     }
 
     private function isBookingConflictException(QueryException $e): bool

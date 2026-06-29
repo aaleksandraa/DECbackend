@@ -299,18 +299,21 @@ class AdminController extends Controller
             'name' => 'required|string|max:255',
             'email' => 'required|string|email|max:255|unique:users',
             'phone' => 'nullable|string|max:255',
-            'password' => 'required|string|min:6',
+            'password' => ['required', 'string', new \App\Rules\StrongPassword()],
             'role' => 'required|string|in:admin,salon,frizer,klijent',
         ]);
 
-        $user = User::create([
+        // role / email_verified_at are not mass assignable; set explicitly.
+        // This path is admin-only and role is validated against an allow list.
+        $user = new User([
             'name' => $validated['name'],
             'email' => $validated['email'],
             'phone' => $validated['phone'] ?? null,
             'password' => Hash::make($validated['password']),
-            'role' => $validated['role'],
-            'email_verified_at' => now(),
         ]);
+        $user->role = $validated['role'];
+        $user->email_verified_at = now();
+        $user->save();
 
         return response()->json([
             'message' => 'User created successfully',
@@ -329,6 +332,12 @@ class AdminController extends Controller
             'phone' => 'nullable|string|max:255',
             'role' => 'sometimes|string|in:admin,salon,frizer,klijent',
         ]);
+
+        // role is not mass assignable; set explicitly (admin-only, validated).
+        if (array_key_exists('role', $validated)) {
+            $user->role = $validated['role'];
+            unset($validated['role']);
+        }
 
         $user->update($validated);
 
@@ -361,14 +370,14 @@ class AdminController extends Controller
             'password' => Hash::make($newPassword),
         ]);
 
-        // In production, send email with new password
-        // For now, we'll return it in response (not recommended for production)
+        // Notify the user (without exposing the plaintext password in storage).
+        $this->notificationService->sendPasswordResetNotification($user);
 
-        // Create notification for user
-        $this->notificationService->sendPasswordResetNotification($user, $newPassword);
-
+        // Return the temporary password only to the requesting admin so it can be
+        // delivered to the user out-of-band. It is never persisted in plaintext.
         return response()->json([
-            'message' => 'Password reset successfully. New password has been sent to user email.',
+            'message' => 'Password reset successfully.',
+            'temporary_password' => $newPassword,
         ]);
     }
 
@@ -378,13 +387,14 @@ class AdminController extends Controller
     public function sendMessageToUser(Request $request, User $user): JsonResponse
     {
         $validated = $request->validate([
+            'title' => 'sometimes|nullable|string|max:255',
             'message' => 'required|string|max:1000',
         ]);
 
         // Create notification for user
         \App\Models\Notification::create([
             'type' => 'admin_message',
-            'title' => 'Poruka od administratora',
+            'title' => $validated['title'] ?? 'Poruka od administratora',
             'message' => $validated['message'],
             'recipient_id' => $user->id,
         ]);

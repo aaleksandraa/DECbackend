@@ -265,7 +265,7 @@ class Salon extends Model
      */
     public function isWithinBusinessHours(?Carbon $dateTime = null): bool
     {
-        $dateTime = $dateTime ?? now(config('app.timezone', 'Europe/Sarajevo'));
+        $dateTime = $dateTime ?? now(config('app.business_timezone', 'Europe/Sarajevo'));
         $dayOfWeek = strtolower($dateTime->format('l'));
 
         if (!is_array($this->working_hours)) {
@@ -293,6 +293,37 @@ class Salon extends Model
         $currentTime = $dateTime->format('H:i');
 
         return $currentTime >= $openTime && $currentTime <= $closeTime;
+    }
+
+    /**
+     * Normalize salon working hours for a day into open/close/is_open keys.
+     *
+     * @return array{is_open: bool, open: string, close: string}|null
+     */
+    public function getNormalizedDayHours(string $dayOfWeek): ?array
+    {
+        if (!is_array($this->working_hours)) {
+            return null;
+        }
+
+        $dayHours = $this->working_hours[$dayOfWeek] ?? null;
+        if (!is_array($dayHours)) {
+            return null;
+        }
+
+        $open = $dayHours['open'] ?? $dayHours['start'] ?? null;
+        $close = $dayHours['close'] ?? $dayHours['end'] ?? null;
+        $isOpen = (bool) ($dayHours['is_open'] ?? $dayHours['is_working'] ?? ($open && $close));
+
+        if (!$isOpen || !$open || !$close) {
+            return null;
+        }
+
+        return [
+            'is_open' => true,
+            'open' => substr((string) $open, 0, 5),
+            'close' => substr((string) $close, 0, 5),
+        ];
     }
 
     /**

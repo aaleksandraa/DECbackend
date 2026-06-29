@@ -28,12 +28,18 @@ class User extends Authenticatable implements MustVerifyEmail
         'city',
         'date_of_birth',
         'gender',
-        'role',
         'avatar',
-        'email_verified_at',
         'is_guest',
         'created_via',
     ];
+
+    /*
+     * NOTE: `role` and `email_verified_at` are intentionally NOT mass assignable.
+     * They are privilege/verification sensitive and must be set explicitly
+     * (e.g. $user->role = '...') so they can never be injected via
+     * create()/update()/fill() from request input. Tests/seeders use factories
+     * which run unguarded and are unaffected.
+     */
 
     /**
      * The attributes that should be hidden for serialization.

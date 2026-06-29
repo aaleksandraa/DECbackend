@@ -3,6 +3,7 @@
 namespace App\Http\Controllers\Api;
 
 use App\Http\Controllers\Controller;
+use App\Jobs\SendClientCampaignEmail;
 use App\Models\Appointment;
 use App\Models\Salon;
 use App\Models\Service;
@@ -11,7 +12,7 @@ use App\Models\User;
 use Carbon\Carbon;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
-use Illuminate\Support\Facades\Mail;
+use Illuminate\Support\Facades\Cache;
 
 class ClientController extends Controller
 {
@@ -149,18 +150,25 @@ class ClientController extends Controller
             return response()->json(['message' => 'Salon not found'], 404);
         }
 
-        $client = User::find($clientId);
-
-        if (!$client) {
-            return response()->json(['message' => 'Client not found'], 404);
-        }
-
         $appointments = Appointment::with(['service', 'staff.user'])
             ->where('client_id', $clientId)
             ->where('salon_id', $salonId)
             ->orderBy('date', 'desc')
             ->orderBy('time', 'desc')
             ->get();
+
+        // Only expose a client's profile to a salon that the client has actually
+        // visited. Without this check any salon could probe arbitrary user IDs
+        // and harvest names/emails/phones (IDOR / PII enumeration).
+        if ($appointments->isEmpty()) {
+            return response()->json(['message' => 'Client not found'], 404);
+        }
+
+        $client = User::find($clientId);
+
+        if (!$client) {
+            return response()->json(['message' => 'Client not found'], 404);
+        }
 
         $recognizedCompletedAppointments = $appointments->filter(
             fn (Appointment $appointment) => $appointment->isRecognizedCompleted()
@@ -219,7 +227,7 @@ class ClientController extends Controller
         }
 
         $validated = $request->validate([
-            'client_ids' => 'required|array|min:1',
+            'client_ids' => 'required|array|min:1|max:1000',
             'client_ids.*' => 'integer|exists:users,id',
             'subject' => 'required|string|max:255',
             'message' => 'required|string|max:10000',
@@ -249,12 +257,19 @@ class ClientController extends Controller
             ], 422);
         }
 
-        $clients = User::whereIn('id', $allowedClientIds)->get();
+        $campaignLockKey = "client-email-campaign:salon:{$salonId}:user:{$user->id}";
+        if (!Cache::add($campaignLockKey, true, now()->addMinutes(2))) {
+            return response()->json([
+                'message' => 'Slanje emailova je vec pokrenuto. Sacekajte nekoliko minuta prije novog slanja.',
+            ], 429);
+        }
 
-        $sentCount = 0;
-        $failedCount = 0;
+        $clients = User::whereIn('id', $allowedClientIds)->get(['id', 'email']);
+
+        $queuedCount = 0;
         $skippedNoEmail = 0;
         $fromName = trim($salonName) !== '' ? $salonName : (string) config('mail.from.name');
+        $delaySeconds = 0;
 
         foreach ($clients as $client) {
             if (empty($client->email)) {
@@ -262,35 +277,48 @@ class ClientController extends Controller
                 continue;
             }
 
-            try {
-                $subject = $this->personalizeTemplate($subjectTemplate, $client);
-                $message = $this->personalizeTemplate($messageTemplate, $client);
+            SendClientCampaignEmail::dispatch(
+                $salonId,
+                (int) $client->id,
+                $subjectTemplate,
+                $messageTemplate,
+                $fromName
+            )->delay(now()->addSeconds($delaySeconds));
 
-                Mail::raw($message, function ($mail) use ($client, $subject, $fromName) {
-                    $mail->to($client->email)
-                        ->subject($subject)
-                        ->from((string) config('mail.from.address'), $fromName);
-                });
-
-                $sentCount++;
-            } catch (\Throwable $e) {
-                $failedCount++;
-                \Log::error('Failed to send client email', [
-                    'client_id' => $client->id,
-                    'salon_id' => $salonId,
-                    'error' => $e->getMessage(),
-                ]);
-            }
+            $queuedCount++;
+            $delaySeconds += 3;
         }
 
         $skippedNotClient = count(array_diff($clientIds, $allowedClientIds));
 
+        if ($queuedCount === 0) {
+            Cache::forget($campaignLockKey);
+
+            return response()->json([
+                'message' => 'Nijedan izabrani klijent nema email adresu.',
+                'queued' => 0,
+                'sent' => 0,
+                'failed' => 0,
+                'skipped_not_client' => $skippedNotClient,
+                'skipped_missing_email' => $skippedNoEmail,
+            ], 422);
+        }
+
+        \Log::info('Client email campaign queued', [
+            'salon_id' => $salonId,
+            'user_id' => $user->id,
+            'queued' => $queuedCount,
+            'skipped_missing_email' => $skippedNoEmail,
+        ]);
+
         return response()->json([
-            'message' => "Email poslat na {$sentCount} klijenata.",
-            'sent' => $sentCount,
-            'failed' => $failedCount,
+            'message' => "Email kampanja je zakazana za {$queuedCount} klijenata.",
+            'queued' => $queuedCount,
+            'sent' => 0,
+            'failed' => 0,
             'skipped_not_client' => $skippedNotClient,
             'skipped_missing_email' => $skippedNoEmail,
+            'send_interval_seconds' => 3,
             'placeholders' => ['{ime}', '{korisnicko_ime}', '{name}'],
         ]);
     }
@@ -441,8 +469,9 @@ class ClientController extends Controller
         }
 
         if ($appointmentFilter === 'upcoming') {
-            $today = now()->format('Y-m-d');
-            $currentTime = now()->format('H:i');
+            $now = now(config('app.business_timezone', 'Europe/Sarajevo'));
+            $today = $now->format('Y-m-d');
+            $currentTime = $now->format('H:i');
             $statusPlaceholders = implode(', ', array_fill(0, count(Appointment::BLOCKING_STATUSES), '?'));
 
             $query->havingRaw(
@@ -610,21 +639,4 @@ class ClientController extends Controller
         return null;
     }
 
-    /**
-     * Replace personalization placeholders in subject/message.
-     */
-    private function personalizeTemplate(string $template, User $client): string
-    {
-        $fullName = trim((string) $client->name);
-        $firstName = $fullName !== '' ? explode(' ', $fullName)[0] : 'klijente';
-
-        return strtr($template, [
-            '{ime}' => $firstName,
-            '{{ime}}' => $firstName,
-            '{korisnicko_ime}' => $fullName,
-            '{{korisnicko_ime}}' => $fullName,
-            '{name}' => $fullName,
-            '{{name}}' => $fullName,
-        ]);
-    }
 }

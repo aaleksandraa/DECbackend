@@ -20,10 +20,32 @@ class ReviewPolicy
 
     /**
      * Determine whether the user can view the model.
+     *
+     * Public review listings are served separately (ReviewController::index).
+     * This single-review endpoint exposes client_id/appointment_id, so restrict
+     * it to the review author, the salon/staff it concerns, and admins.
      */
     public function view(User $user, Review $review): bool
     {
-        return true;
+        if ($user->role === 'admin') {
+            return true;
+        }
+
+        if ($user->role === 'klijent') {
+            return $review->client_id === $user->id;
+        }
+
+        if ($user->role === 'salon') {
+            $salonId = $user->ownedSalon->id ?? null;
+            return $salonId && $review->salon_id === $salonId;
+        }
+
+        if ($user->role === 'frizer') {
+            $staffId = $user->staffProfile->id ?? null;
+            return $staffId && $review->staff_id === $staffId;
+        }
+
+        return false;
     }
 
     /**

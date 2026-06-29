@@ -3,6 +3,8 @@
 namespace App\Http\Requests\Appointment;
 
 use App\Http\Requests\BaseRequest;
+use App\Models\Staff;
+use Illuminate\Validation\Validator;
 
 class StoreAppointmentRequest extends BaseRequest
 {
@@ -43,6 +45,44 @@ class StoreAppointmentRequest extends BaseRequest
         }
 
         return $rules;
+    }
+
+    /**
+     * Enforce multi-tenant ownership for manual bookings.
+     *
+     * Salon owners and staff (frizer) may only create appointments within their
+     * own salon. Without this, role checks alone allow booking into ANY salon by
+     * passing a foreign salon_id/staff_id (cross-tenant write IDOR). Clients are
+     * intentionally allowed to book at any salon.
+     */
+    public function withValidator(Validator $validator): void
+    {
+        $user = $this->user();
+
+        if (!$user || !in_array($user->role, ['salon', 'frizer'], true)) {
+            return;
+        }
+
+        $validator->after(function (Validator $validator) use ($user) {
+            $ownSalonId = $user->role === 'salon'
+                ? optional($user->ownedSalon)->id
+                : optional($user->staffProfile)->salon_id;
+
+            if (!$ownSalonId) {
+                $validator->errors()->add('salon_id', 'Nemate povezan salon za zakazivanje.');
+                return;
+            }
+
+            if ((int) $this->input('salon_id') !== (int) $ownSalonId) {
+                $validator->errors()->add('salon_id', 'Ne možete zakazati termin u tuđem salonu.');
+                return;
+            }
+
+            $staffId = $this->input('staff_id');
+            if ($staffId && !Staff::where('id', $staffId)->where('salon_id', $ownSalonId)->exists()) {
+                $validator->errors()->add('staff_id', 'Odabrani radnik ne pripada vašem salonu.');
+            }
+        });
     }
 
     /**

@@ -81,6 +81,21 @@ return [
 
     /*
     |--------------------------------------------------------------------------
+    | Business Timezone
+    |--------------------------------------------------------------------------
+    |
+    | Wall-clock timezone the business operates in. Appointment "date"/"time"/
+    | "end_time" are stored as naive local strings in this timezone, so any
+    | "now" comparison against them must use this value (not the UTC app
+    | timezone). Storage timestamps (created_at/updated_at) intentionally stay
+    | in UTC, so changing this never rewrites or reinterprets saved rows.
+    |
+    */
+
+    'business_timezone' => env('APP_BUSINESS_TIMEZONE', 'Europe/Sarajevo'),
+
+    /*
+    |--------------------------------------------------------------------------
     | Application Locale Configuration
     |--------------------------------------------------------------------------
     |

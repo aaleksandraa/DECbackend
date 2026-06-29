@@ -4,6 +4,7 @@ namespace App\Http\Resources;
 
 use Illuminate\Http\Request;
 use Illuminate\Http\Resources\Json\JsonResource;
+use Illuminate\Support\Facades\URL;
 
 class AppointmentResource extends JsonResource
 {
@@ -79,6 +80,11 @@ class AppointmentResource extends JsonResource
                     'rating' => $this->review->rating,
                 ] : null;
             }),
+            'ics_url' => URL::temporarySignedRoute(
+                'public.appointments.ics',
+                now()->addDays(30),
+                ['appointment' => $this->id]
+            ),
             'can_be_cancelled' => $this->canBeCancelled(),
             'can_be_rescheduled' => $this->canBeRescheduled(),
             'can_be_reviewed' => $this->canBeReviewed(),

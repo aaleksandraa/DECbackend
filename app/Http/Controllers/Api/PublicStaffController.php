@@ -113,7 +113,7 @@ class PublicStaffController extends Controller
             ->with(['salon', 'breaks', 'vacations'])
             ->firstOrFail();
 
-        $date = $request->date ?? now()->format('Y-m-d');
+        $date = $request->date ?? now(config('app.business_timezone', 'Europe/Sarajevo'))->format('Y-m-d');
         $duration = $request->duration ?? 60;
 
         // Get available time slots for the day

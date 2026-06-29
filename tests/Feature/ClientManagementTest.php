@@ -2,12 +2,15 @@
 
 namespace Tests\Feature;
 
+use App\Jobs\SendClientCampaignEmail;
 use App\Models\Appointment;
 use App\Models\Salon;
 use App\Models\Service;
 use App\Models\Staff;
 use App\Models\User;
 use Illuminate\Foundation\Testing\RefreshDatabase;
+use Illuminate\Support\Facades\Cache;
+use Illuminate\Support\Facades\Queue;
 use Tests\TestCase;
 
 class ClientManagementTest extends TestCase
@@ -120,6 +123,48 @@ class ClientManagementTest extends TestCase
             ]);
 
         $this->assertSame('Client With Future Appointment', $response->json('clients.0.name'));
+    }
+
+    public function test_client_email_campaign_is_queued_instead_of_sent_synchronously(): void
+    {
+        Queue::fake();
+        Cache::flush();
+
+        [$owner, $salon, $staff, $service] = $this->createSalonContext();
+        $clientIds = [];
+
+        foreach (['Queued Client One', 'Queued Client Two'] as $name) {
+            $client = User::factory()->create([
+                'role' => 'klijent',
+                'name' => $name,
+            ]);
+            $clientIds[] = $client->id;
+
+            Appointment::factory()->create([
+                'salon_id' => $salon->id,
+                'staff_id' => $staff->id,
+                'service_id' => $service->id,
+                'client_id' => $client->id,
+                'date' => now()->addDay()->format('Y-m-d'),
+                'status' => 'confirmed',
+            ]);
+        }
+
+        $response = $this->actingAs($owner)->postJson('/api/v1/clients/send-email', [
+            'client_ids' => $clientIds,
+            'subject' => 'Obavijest za {ime}',
+            'message' => 'Salon je promijenio lokaciju.',
+        ]);
+
+        $response->assertOk()
+            ->assertJson([
+                'queued' => 2,
+                'sent' => 0,
+                'failed' => 0,
+                'send_interval_seconds' => 3,
+            ]);
+
+        Queue::assertPushed(SendClientCampaignEmail::class, 2);
     }
 
     private function createSalonContext(): array

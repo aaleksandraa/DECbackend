@@ -72,17 +72,19 @@ class AppointmentController extends Controller
             return $user;
         }
 
-        // Create new guest user
-        return \App\Models\User::create([
+        // Create new guest user. role is set explicitly (not mass assignable).
+        $guest = new \App\Models\User([
             'name' => $data['name'],
             'email' => $data['email'],
             'phone' => $data['phone'] ?? null,
             'password' => bcrypt(\Illuminate\Support\Str::random(32)), // Random password
-            'email_verified_at' => null,
-            'role' => 'klijent',
             'is_guest' => true,
             'created_via' => 'booking',
         ]);
+        $guest->role = 'klijent';
+        $guest->save();
+
+        return $guest;
     }
 
     /**
@@ -775,11 +777,25 @@ class AppointmentController extends Controller
      * @param int $appointmentId
      * @return \Illuminate\Http\Response
      */
-    public function downloadIcs($appointmentId)
+    public function downloadIcs(Request $request, $appointmentId)
     {
         try {
             // Find appointment by ID
             $appointment = Appointment::with(['salon', 'staff', 'service'])->findOrFail($appointmentId);
+
+            // The public route is protected by a signed URL (the signature is the
+            // authorization). When an authenticated user hits the protected route,
+            // verify they are actually related to this appointment.
+            $user = $request->user();
+            if ($user && !$user->isAdmin()) {
+                $authorized = $appointment->client_id === $user->id
+                    || (optional($user->ownedSalon)->id === $appointment->salon_id)
+                    || (optional($user->staffProfile)->id === $appointment->staff_id);
+
+                if (!$authorized) {
+                    abort(403);
+                }
+            }
 
             // Generate ICS content
             $icsContent = $this->generateIcsContent($appointment);
@@ -801,7 +817,6 @@ class AppointmentController extends Controller
 
             return response()->json([
                 'message' => 'Greška pri generisanju ICS fajla',
-                'error' => $e->getMessage(),
             ], 500);
         }
     }

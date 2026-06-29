@@ -85,13 +85,16 @@ class AuthController extends Controller
                 ], 422);
             }
 
-            $user = User::create([
+            // role is validated to salon|frizer|klijent (admin excluded) and set
+            // explicitly because it is intentionally not mass assignable.
+            $user = new User([
                 'name' => $request->name,
                 'email' => $request->email,
                 'phone' => $request->phone,
-                'role' => $request->role,
                 'password' => Hash::make($request->password),
             ]);
+            $user->role = $request->role;
+            $user->save();
 
             // Snimi pristanke
             $ipAddress = $request->ip();
@@ -402,15 +405,24 @@ class AuthController extends Controller
     {
         $user = $request->user();
 
-        $validated = $request->validate([
+        $rules = [
             'name' => 'sometimes|string|max:255',
             'email' => 'sometimes|string|email|max:255|unique:users,email,' . $user->id,
             'phone' => 'nullable|string|max:255',
             'city' => 'nullable|string|max:255',
             'date_of_birth' => 'nullable|date',
             'gender' => 'nullable|in:male,female,other',
-            'avatar' => 'nullable',
-        ]);
+        ];
+
+        // When an avatar file is uploaded, validate it as an image. Otherwise it
+        // may be an existing string URL (or null) which we keep as-is.
+        if ($request->hasFile('avatar')) {
+            $rules['avatar'] = 'image|mimes:jpeg,png,jpg,webp|max:2048';
+        } else {
+            $rules['avatar'] = 'nullable|string';
+        }
+
+        $validated = $request->validate($rules);
 
         // Handle avatar upload if it's a file
         if ($request->hasFile('avatar')) {
@@ -443,7 +455,7 @@ class AuthController extends Controller
     {
         $validated = $request->validate([
             'current_password' => 'required|string',
-            'password' => 'required|string|min:8|confirmed',
+            'password' => ['required', 'string', 'confirmed', new \App\Rules\StrongPassword()],
         ]);
 
         $user = $request->user();
@@ -510,7 +522,7 @@ class AuthController extends Controller
         $request->validate([
             'email' => 'required|email',
             'token' => 'required|string',
-            'password' => 'required|string|min:8|confirmed'
+            'password' => ['required', 'string', 'confirmed', new \App\Rules\StrongPassword()],
         ]);
 
         // Pronađi token

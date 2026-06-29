@@ -19,14 +19,15 @@ class StaffService
             // Create user account if email is provided
             $userId = null;
             if (isset($data['email']) && isset($data['password'])) {
-                $user = User::create([
+                // role is set explicitly (not mass assignable).
+                $user = new User([
                     'name' => $data['name'],
                     'email' => $data['email'],
                     'password' => Hash::make($data['password']),
                     'phone' => $data['phone'] ?? null,
-                    'role' => 'frizer',
-                    'salon_id' => $salon->id,
                 ]);
+                $user->role = 'frizer';
+                $user->save();
 
                 $userId = $user->id;
             }

@@ -463,6 +463,45 @@ class AppointmentTest extends TestCase
         $this->assertSame(1, $widget->fresh()->total_bookings);
     }
 
+    public function test_widget_available_slots_ignore_tampered_client_duration(): void
+    {
+        $tomorrow = now()->addDay()->format('d.m.Y');
+        $widget = WidgetSetting::create([
+            'salon_id' => $this->salon->id,
+            'api_key' => 'test-widget-slot-duration-key',
+            'is_active' => true,
+            'allowed_domains' => [],
+        ]);
+
+        $basePayload = [
+            'key' => $widget->api_key,
+            'staff_id' => $this->staff->id,
+            'date' => $tomorrow,
+            'services' => [[
+                'serviceId' => (string) $this->service->id,
+                'duration' => 5,
+            ]],
+        ];
+
+        $tamperedResponse = $this->postJson('/api/v1/widget/slots/available', $basePayload);
+        $trustedResponse = $this->postJson('/api/v1/widget/slots/available', [
+            'key' => $widget->api_key,
+            'staff_id' => $this->staff->id,
+            'date' => $tomorrow,
+            'services' => [[
+                'serviceId' => (string) $this->service->id,
+                'duration' => 60,
+            ]],
+        ]);
+
+        $tamperedResponse->assertStatus(200);
+        $trustedResponse->assertStatus(200);
+        $this->assertSame(
+            $trustedResponse->json('slots'),
+            $tamperedResponse->json('slots')
+        );
+    }
+
     public function test_public_booking_idempotency_key_prevents_duplicate_retry(): void
     {
         $tomorrow = now()->addDay()->format('d.m.Y');

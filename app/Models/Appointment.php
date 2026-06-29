@@ -156,8 +156,9 @@ class Appointment extends Model
      */
     public function scopeUpcoming($query)
     {
-        $today = now()->format('Y-m-d');
-        $currentTime = now()->format('H:i');
+        $now = now(config('app.business_timezone', 'Europe/Sarajevo'));
+        $today = $now->format('Y-m-d');
+        $currentTime = $now->format('H:i');
 
         return $query->where(function ($query) use ($today, $currentTime) {
             $query->where('date', '>', $today)
@@ -173,8 +174,9 @@ class Appointment extends Model
      */
     public function scopePast($query)
     {
-        $today = now()->format('Y-m-d');
-        $currentTime = now()->format('H:i');
+        $now = now(config('app.business_timezone', 'Europe/Sarajevo'));
+        $today = $now->format('Y-m-d');
+        $currentTime = $now->format('H:i');
 
         return $query->where(function ($query) use ($today, $currentTime) {
             $query->where('date', '<', $today)
@@ -219,8 +221,9 @@ class Appointment extends Model
             return false;
         }
 
-        $now = now();
-        $appointmentDateTime = \Carbon\Carbon::parse($this->date->format('Y-m-d') . ' ' . $this->time);
+        $tz = config('app.business_timezone', 'Europe/Sarajevo');
+        $now = now($tz);
+        $appointmentDateTime = \Carbon\Carbon::parse($this->date->format('Y-m-d') . ' ' . $this->time, $tz);
 
         // Can only mark as no-show after the appointment start time has passed
         return $now->greaterThan($appointmentDateTime);
@@ -231,8 +234,9 @@ class Appointment extends Model
      */
     public function hasExpired(): bool
     {
-        $now = now();
-        $endDateTime = \Carbon\Carbon::parse($this->date->format('Y-m-d') . ' ' . $this->end_time);
+        $tz = config('app.business_timezone', 'Europe/Sarajevo');
+        $now = now($tz);
+        $endDateTime = \Carbon\Carbon::parse($this->date->format('Y-m-d') . ' ' . $this->end_time, $tz);
 
         return $now->greaterThan($endDateTime);
     }
@@ -251,7 +255,7 @@ class Appointment extends Model
             return false;
         }
 
-        $reference = $referenceTime ?: Carbon::now();
+        $reference = $referenceTime ?: Carbon::now(config('app.business_timezone', 'Europe/Sarajevo'));
         $dateValue = $this->date instanceof Carbon ? $this->date->copy() : Carbon::parse((string) $this->date);
         $referenceDate = $reference->copy()->startOfDay();
 
@@ -275,7 +279,7 @@ class Appointment extends Model
      */
     public static function applyRecognizedCompletedFilter($query, ?Carbon $referenceTime = null, ?string $table = null)
     {
-        $reference = $referenceTime ?: Carbon::now();
+        $reference = $referenceTime ?: Carbon::now(config('app.business_timezone', 'Europe/Sarajevo'));
         $today = $reference->format('Y-m-d');
         $currentTime = $reference->format('H:i:s');
 
@@ -350,7 +354,7 @@ class Appointment extends Model
      */
     public static function recognizedRevenueBindings(?Carbon $referenceTime = null): array
     {
-        $reference = $referenceTime ?: Carbon::now();
+        $reference = $referenceTime ?: Carbon::now(config('app.business_timezone', 'Europe/Sarajevo'));
         $today = $reference->format('Y-m-d');
 
         return [$today, $today, $reference->format('H:i:s')];
